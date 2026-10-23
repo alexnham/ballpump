@@ -1,0 +1,20 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.ballpump-cursor*
+
+# Rust build output
+target/
+
+# Frontend dependencies and generated output
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+coverage/
+
+# Logs and local OS files
+*.log
+.DS_Store
+Thumbs.db
