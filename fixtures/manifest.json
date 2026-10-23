@@ -4,38 +4,32 @@
     "signature": "Gk3VJ3b2aiMvwmUBcLjGjuG3tHq9ZkGqP89xeAm4Xek7WLf9z5FRLJ9yiPwQwqAvsMxJp6EzBEHtEznPPRRjnEy",
     "slot": 460542270,
     "block_time": 1792779513,
-    "observed_events": [
-      {
-        "side": "Buy",
-        "quote_lamports": 5552387123
-      }
-    ]
+    "expected_excluded_quotes": 1,
+    "expected_sol_trades": []
   },
   {
     "file": "observed-amm-1",
     "signature": "66tipPKCJwgcGeW9RsFkdz83dj7jQkJzmTsWLHpjiJ8YBt94c7B4q2hXHWPN9a3hGahgKEYYACk1UivcvG12cHge",
     "slot": 460542270,
     "block_time": 1792779513,
-    "observed_events": [
-      {
-        "side": "Buy",
-        "quote_lamports": 18695549906
-      }
-    ]
+    "expected_excluded_quotes": 1,
+    "expected_sol_trades": []
   },
   {
     "file": "observed-amm-2",
     "signature": "6Qyw3thKAU3XyCRLzB9vCJv7kNSXTrVvVQRafGCD5BsWHvdxTjxnxboEXXu627TcDsQiV9NNw1Cjt8hyS99y6kU",
     "slot": 460542270,
     "block_time": 1792779513,
-    "observed_events": []
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": []
   },
   {
     "file": "observed-amm-sol-0",
     "signature": "48pXCfBeTtZsCf394y7omBjwpHdAzUGT1Qi6kbUXrcq5x95mh2od4aqsfGCQNB3g8Q8Esh3sX2NF7PYaGs2Kd7yR",
     "slot": 460543125,
     "block_time": 1792779694,
-    "observed_events": [
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": [
       {
         "side": "Sell",
         "quote_lamports": 13316584
@@ -47,10 +41,11 @@
     "signature": "2NLpfdXJ3zJ5fWkSnJvSH7JKrqcX7UC4HxGFgfjtNsa9xcmZdFjtt84nGDcQxXyeAeZZ3fAUH5F1QW7qwa8bDM3g",
     "slot": 460543125,
     "block_time": 1792779694,
-    "observed_events": [
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": [
       {
         "side": "Buy",
-        "quote_lamports": 12993689
+        "quote_lamports": 12954823
       }
     ]
   },
@@ -59,10 +54,11 @@
     "signature": "q2oWC6G3mq9S3KJVwNt3cmfbFXmHMFLXBfGpDKqWSi9FdJ1NV7hc7j69VbuAk2EAkdMZASWetMwuUTH93SxfXs2",
     "slot": 460543125,
     "block_time": 1792779694,
-    "observed_events": [
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": [
       {
         "side": "Buy",
-        "quote_lamports": 56709258
+        "quote_lamports": 56147779
       }
     ]
   },
@@ -71,10 +67,11 @@
     "signature": "4PBBnCs2TACeoJxt9ZSXAiB3mpe5uVw5ZnTFHXaDZUhv4XEvuRoXDdgJ9tGpdUnXKjec24x24UwsTEiNXKeSXYDL",
     "slot": 460543125,
     "block_time": 1792779694,
-    "observed_events": [
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": [
       {
         "side": "Buy",
-        "quote_lamports": 14317
+        "quote_lamports": 14173
       }
     ]
   },
@@ -83,7 +80,8 @@
     "signature": "bttZ4DMt7VGKtnL79QmeeXpbjTeqCHNeHgjH25ikPCfANZAfhHRX8uEGdbxHR4ppYZ3pwP4QZri2Nu93M1CwRec",
     "slot": 460542263,
     "block_time": 1792779512,
-    "observed_events": [
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": [
       {
         "side": "Sell",
         "mint": "74HWwTXegzuGxmpNjEdCJnnPY3z4Zyy5oNhaQaMwpump",
@@ -96,33 +94,24 @@
     "signature": "21aSjE7unHiapvkwSv3dYR3usgRWCh9mt8wyP2GHJrxVEXxM8Jw7tqZceBkSTxkYcnYh1ndknULm2RKLJmUdCT5a",
     "slot": 460542263,
     "block_time": 1792779512,
-    "observed_events": [
-      {
-        "side": "Buy",
-        "mint": "3mvAbgGvwuaX2LZGTqafCh1p283xTkFVfjnfvMhbpump",
-        "quote_lamports": 0
-      }
-    ]
+    "expected_excluded_quotes": 1,
+    "expected_sol_trades": []
   },
   {
     "file": "observed-pump-2",
     "signature": "2h3r3mewYDDmFBh1Cdc5N9MVZxmM8DMxfMX7GpLeeFoHs2X9hPeTUBTsRD9wTJh62ijsQoUQ4BexJaM7rQCtZtep",
     "slot": 460542263,
     "block_time": 1792779512,
-    "observed_events": [
-      {
-        "side": "Sell",
-        "mint": "EqBHWVAqWajdcRp2TfkE1DvgzhRW1kWQSRoxxLeZpump",
-        "quote_lamports": 0
-      }
-    ]
+    "expected_excluded_quotes": 1,
+    "expected_sol_trades": []
   },
   {
     "file": "observed-pump-sol-0",
     "signature": "UZbhcSMKUjbCGBgq5EeisqeW8cBZLGzncij8piUQ8SRumW1ePgWNqhe6NM9Ea5zmKwshXXFu2BGQ21ZU5H91MYr",
     "slot": 460543117,
     "block_time": 1792779692,
-    "observed_events": [
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": [
       {
         "side": "Buy",
         "mint": "5tLishD8ZBmn7fTYH9w1QRYpTHvWEjc2G7y1Aveupump",
@@ -135,7 +124,8 @@
     "signature": "vV5jhq2t9JKfBkBwxD75tULrbknkRFgxLaoSxqHke7mwQeKpEmQiDDN4GqAYfLuqTJtZy9EgCxsL7QLAdeKcLPi",
     "slot": 460543117,
     "block_time": 1792779692,
-    "observed_events": [
+    "expected_excluded_quotes": 0,
+    "expected_sol_trades": [
       {
         "side": "Buy",
         "mint": "5tLishD8ZBmn7fTYH9w1QRYpTHvWEjc2G7y1Aveupump",

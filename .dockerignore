@@ -1,0 +1,17 @@
+**
+!Dockerfile
+!backend/
+backend/**
+!backend/Cargo.toml
+!backend/Cargo.lock
+!backend/src/
+!backend/src/**
+!frontend/
+frontend/**
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/src/
+!frontend/src/**

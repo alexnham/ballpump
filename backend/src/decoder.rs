@@ -55,10 +55,13 @@ fn parse_event(ix: &Instruction, parent: &Instruction, spec: TradeSpec) -> Resul
             "event mint mismatch"
         );
         ensure!(e.is_buy == spec.buy, "event side mismatch");
+        if e.quote_mint != [0; 32] && bs58::encode(e.quote_mint).into_string() != WSOL {
+            return Ok(None);
+        }
         // Legacy SOL events use sol_amount; quote-aware instructions use quote_amount.
         if quote.is_some() {
             ensure!(
-                bs58::encode(e.quote_mint).into_string() == WSOL,
+                e.quote_mint == [0; 32] || bs58::encode(e.quote_mint).into_string() == WSOL,
                 "event quote mismatch"
             );
         }
@@ -79,7 +82,13 @@ fn parse_event(ix: &Instruction, parent: &Instruction, spec: TradeSpec) -> Resul
                 == spec.pool.map(|i| key(parent, i)).transpose()?,
             "event pool mismatch"
         );
-        (e.quote_amount_in, e.timestamp, Side::Buy)
+        (
+            e.quote_amount_in_with_lp_fee
+                .checked_sub(e.lp_fee)
+                .context("LP fee exceeds quote credit")?,
+            e.timestamp,
+            Side::Buy,
+        )
     } else {
         ensure!(disc == SELLEVENT_DISC, "not SellEvent");
         let e =
@@ -111,20 +120,154 @@ fn parse_event(ix: &Instruction, parent: &Instruction, spec: TradeSpec) -> Resul
     }))
 }
 
+#[derive(Clone, Copy)]
+enum Call {
+    Single(TradeSpec),
+    Route,
+    Boost,
+}
+fn event_trade(
+    ix: &Instruction,
+    mint: String,
+    amount: u64,
+    timestamp: i64,
+    side: Side,
+) -> Result<Trade> {
+    ensure!(bs58::decode(&mint).into_vec()?.len() == 32, "invalid mint");
+    Ok(Trade {
+        signature: String::new(),
+        slot: 0,
+        instruction_index: ix.outer_index,
+        inner_instruction_index: ix.inner_index,
+        mint,
+        event_timestamp_ms: timestamp.checked_mul(1000).context("invalid timestamp")?,
+        side,
+        quote_lamports: amount,
+        venue: if ix.program == PUMP {
+            "PumpFun"
+        } else {
+            "PumpSwap"
+        }
+        .into(),
+    })
+}
+fn extended_event(ix: &Instruction, parent: &Instruction, call: Call) -> Result<Option<Trade>> {
+    let disc = ix.data.get(8..16).context("missing event discriminator")?;
+    let mut payload = &ix.data[16..];
+    if disc == POSTCOMPLETEBUYEVENT_DISC && ix.program == PUMP {
+        let e = PostCompleteBuyEvent::deserialize(&mut payload)?;
+        let mint = bs58::encode(e.mint).into_string();
+        let quote = bs58::encode(e.quote_mint).into_string();
+        ensure!(
+            parent.accounts.contains(&mint),
+            "post-completion mint not in call"
+        );
+        if e.quote_mint != [0; 32] && quote != WSOL {
+            return Ok(None);
+        }
+        return Ok(Some(event_trade(
+            ix,
+            mint,
+            e.quote_in,
+            e.timestamp,
+            Side::Buy,
+        )?));
+    }
+    match call {
+        Call::Single(spec) => parse_event(ix, parent, spec),
+        Call::Boost => {
+            let e = BoostBuyAndBurnEvent::deserialize(&mut payload)?;
+            ensure!(
+                bs58::encode(e.pool).into_string() == key(parent, 0)?,
+                "boost pool mismatch"
+            );
+            let mint = bs58::encode(e.mint).into_string();
+            ensure!(mint == key(parent, 3)?, "boost mint mismatch");
+            if key(parent, 4)? != WSOL {
+                return Ok(None);
+            }
+            Ok(Some(event_trade(
+                ix,
+                mint,
+                e.quote_amount_in_used,
+                e.timestamp,
+                Side::Buy,
+            )?))
+        }
+        Call::Route => {
+            if ix.program == PUMP {
+                let e = TradeEvent::deserialize(&mut payload)?;
+                let mint = bs58::encode(e.mint).into_string();
+                let mint_index = parent
+                    .accounts
+                    .iter()
+                    .position(|a| a == &mint)
+                    .context("route mint missing")?;
+                if e.quote_mint != [0; 32] && bs58::encode(e.quote_mint).into_string() != WSOL {
+                    return Ok(None);
+                }
+                let quote_index = parent
+                    .accounts
+                    .iter()
+                    .position(|a| a == WSOL)
+                    .context("route SOL quote missing")?;
+                parse_event(
+                    ix,
+                    parent,
+                    TradeSpec {
+                        disc: [0; 8],
+                        buy: e.is_buy,
+                        mint: mint_index,
+                        quote: Some(quote_index),
+                        pool: None,
+                    },
+                )
+            } else {
+                let buy = disc == BUYEVENT_DISC;
+                let pool = if buy {
+                    BuyEvent::deserialize(&mut payload)?.pool
+                } else {
+                    SellEvent::deserialize(&mut payload)?.pool
+                };
+                let pool = bs58::encode(pool).into_string();
+                // Official multi-hop layout: 16 fixed accounts, then five per hop.
+                let start = (16..parent.accounts.len())
+                    .step_by(5)
+                    .find(|i| parent.accounts.get(i + 2) == Some(&pool))
+                    .context("route pool missing")?;
+                parse_event(
+                    ix,
+                    parent,
+                    TradeSpec {
+                        disc: [0; 8],
+                        buy,
+                        mint: start,
+                        quote: Some(start + 1),
+                        pool: Some(start + 2),
+                    },
+                )
+            }
+        }
+    }
+}
 pub fn decode(tx: &Transaction) -> Decoded {
     let mut result = Decoded::default();
     if tx.failed {
         return result;
     }
-    let mut stack: Vec<(&Instruction, Option<TradeSpec>, bool)> = Vec::new();
+    let mut stack: Vec<(&Instruction, Option<Call>, usize)> = vec![];
+    let missing = |call: Option<Call>, count: usize| {
+        matches!(call, Some(Call::Single(_) | Call::Boost)) && count == 0
+    };
     for ix in &tx.instructions {
-        if !ix.succeeded {continue;}
-        // Unwind completed sibling calls. Missing heights cannot prove event ancestry.
+        if !ix.succeeded {
+            continue;
+        }
         while stack.last().is_some_and(|(p, _, _)| {
             p.outer_index != ix.outer_index || p.stack_height >= ix.stack_height
         }) {
-            let (_, spec, emitted) = stack.pop().unwrap();
-            if spec.is_some() && !emitted {
+            let (_, call, count) = stack.pop().unwrap();
+            if missing(call, count) {
                 result.failures += 1;
             }
         }
@@ -135,47 +278,85 @@ pub fn decode(tx: &Transaction) -> Decoded {
         } else {
             &[]
         };
-        let spec = specs.iter().find(|s| ix.data.starts_with(&s.disc)).copied();
-        if spec.is_some() {
+        let call = if (ix.program == PUMP && ix.data.starts_with(&MULTI_HOP_CURVE_SWAP_DISC))
+            || (ix.program == AMM && ix.data.starts_with(&MULTI_HOP_SWAP_DISC))
+        {
+            Some(Call::Route)
+        } else if ix.program == AMM && ix.data.starts_with(&BOOST_BUY_AND_BURN_DISC) {
+            Some(Call::Boost)
+        } else {
+            specs
+                .iter()
+                .find(|s| ix.data.starts_with(&s.disc))
+                .copied()
+                .map(Call::Single)
+        };
+        if call.is_some() {
             result.trade_instructions += 1;
         }
-        if ix.data.starts_with(&EVENT_TAG) && (ix.program == PUMP || ix.program == AMM) {
-            if let Some((parent, Some(s), emitted)) = stack.last_mut() {
-                if parent.program == ix.program && ix.stack_height == parent.stack_height + 1 {
-                    // Ignore other event kinds emitted by the same trade (incentives etc.).
-                    let expected = if ix.program == PUMP {
-                        TRADEEVENT_DISC
+        let mut handled_event = false;
+        if ix.data.starts_with(&EVENT_TAG)
+            && (ix.program == PUMP || ix.program == AMM)
+            && let Some((parent, Some(parent_call), count)) = stack.last_mut()
+            && parent.program == ix.program
+            && ix.stack_height == parent.stack_height + 1
+        {
+            let disc = ix.data.get(8..16);
+            let recognized = match parent_call {
+                Call::Single(s) => {
+                    disc == Some(if ix.program == PUMP {
+                        TRADEEVENT_DISC.as_slice()
                     } else if s.buy {
-                        BUYEVENT_DISC
+                        BUYEVENT_DISC.as_slice()
                     } else {
-                        SELLEVENT_DISC
-                    };
-                    if ix.data.get(8..16) == Some(expected.as_slice()) {
-                        if *emitted {
-                            result.failures += 1;
-                            continue;
-                        }
-                        *emitted = true;
-                        match parse_event(ix, parent, *s) {
-                            Ok(Some(mut t)) => {
-                                t.signature = tx.signature.clone();
-                                t.slot = tx.slot;
-                                result.trades.push(t);
-                            }
-                            Ok(None) => result.excluded_quotes += 1,
-                            Err(e) => {
-                                tracing::debug!(error=?e, "trade decode rejected");
-                                result.failures += 1;
-                            }
-                        }
+                        SELLEVENT_DISC.as_slice()
+                    })
+                }
+                Call::Boost => disc == Some(BOOSTBUYANDBURNEVENT_DISC.as_slice()),
+                Call::Route => {
+                    if ix.program == PUMP {
+                        disc == Some(TRADEEVENT_DISC.as_slice())
+                    } else {
+                        disc == Some(BUYEVENT_DISC.as_slice())
+                            || disc == Some(SELLEVENT_DISC.as_slice())
+                    }
+                }
+            } || (ix.program == PUMP
+                && disc == Some(POSTCOMPLETEBUYEVENT_DISC.as_slice()));
+            if recognized {
+                handled_event = true;
+                *count += 1;
+                match extended_event(ix, parent, *parent_call) {
+                    Ok(Some(mut t)) => {
+                        t.signature = tx.signature.clone();
+                        t.slot = tx.slot;
+                        result.trades.push(t);
+                    }
+                    Ok(None) => result.excluded_quotes += 1,
+                    Err(e) => {
+                        tracing::debug!(error=?e,"trade decode rejected");
+                        result.failures += 1;
                     }
                 }
             }
         }
-        stack.push((ix, spec, false));
+        if !handled_event
+            && ix.data.starts_with(&EVENT_TAG)
+            && ((ix.program == PUMP
+                && [TRADEEVENT_DISC, POSTCOMPLETEBUYEVENT_DISC]
+                    .iter()
+                    .any(|d| ix.data.get(8..16) == Some(d.as_slice())))
+                || (ix.program == AMM
+                    && [BUYEVENT_DISC, SELLEVENT_DISC, BOOSTBUYANDBURNEVENT_DISC]
+                        .iter()
+                        .any(|d| ix.data.get(8..16) == Some(d.as_slice()))))
+        {
+            result.failures += 1;
+        }
+        stack.push((ix, call, 0));
     }
-    for (_, spec, emitted) in stack {
-        if spec.is_some() && !emitted {
+    for (_, call, count) in stack {
+        if missing(call, count) {
             result.failures += 1;
         }
     }
@@ -185,26 +366,54 @@ pub fn decode(tx: &Transaction) -> Decoded {
 /// Logs are used only to verify invocation completion, never as a source of amounts.
 /// A caller can catch a failed CPI while the overall transaction still succeeds.
 pub fn apply_log_outcomes(instructions: &mut [Instruction], logs: &[String]) -> Result<()> {
-    let mut stack: Vec<(String,usize)> = vec![];
-    let mut cursor=0;
+    let mut stack: Vec<(String, usize)> = vec![];
+    let mut cursor = 0;
     for line in logs {
-        let Some(rest)=line.strip_prefix("Program ") else {continue};
-        if let Some((program,depth))=rest.split_once(" invoke [") {
-            let height: u32=depth.strip_suffix(']').context("invalid invocation log")?.parse()?;
-            ensure!(height as usize==stack.len()+1,"incomplete invocation trace");
-            let index=(cursor..instructions.len()).find(|i| instructions[*i].program==program && instructions[*i].stack_height==height).context("invocation not found in instruction trace")?;
-            ensure!(!instructions[cursor..index].iter().any(|i|i.program==PUMP||i.program==AMM),"missing program invocation log");
-            cursor=index+1;stack.push((program.into(),index));
+        let Some(rest) = line.strip_prefix("Program ") else {
+            continue;
+        };
+        if let Some((program, depth)) = rest.split_once(" invoke [") {
+            let height: u32 = depth
+                .strip_suffix(']')
+                .context("invalid invocation log")?
+                .parse()?;
+            ensure!(
+                height as usize == stack.len() + 1,
+                "incomplete invocation trace"
+            );
+            let index = (cursor..instructions.len())
+                .find(|i| {
+                    instructions[*i].program == program && instructions[*i].stack_height == height
+                })
+                .context("invocation not found in instruction trace")?;
+            ensure!(
+                !instructions[cursor..index]
+                    .iter()
+                    .any(|i| i.program == PUMP || i.program == AMM),
+                "missing program invocation log"
+            );
+            cursor = index + 1;
+            stack.push((program.into(), index));
         } else if rest.ends_with(" success") || rest.contains(" failed: ") {
-            let program=rest.split_whitespace().next().context("missing program")?;
-            let (expected,start)=stack.pop().context("unmatched program completion")?;
-            ensure!(expected==program,"mismatched program completion");
-            if rest.ends_with(" success") {instructions[start].succeeded=true;}
-            else {for ix in &mut instructions[start..cursor] {ix.succeeded=false;}}
+            let program = rest.split_whitespace().next().context("missing program")?;
+            let (expected, start) = stack.pop().context("unmatched program completion")?;
+            ensure!(expected == program, "mismatched program completion");
+            if rest.ends_with(" success") {
+                instructions[start].succeeded = true;
+            } else {
+                for ix in &mut instructions[start..cursor] {
+                    ix.succeeded = false;
+                }
+            }
         }
     }
-    ensure!(stack.is_empty(),"truncated invocation trace");
-    ensure!(!instructions[cursor..].iter().any(|i|i.program==PUMP||i.program==AMM),"missing program completion");
+    ensure!(stack.is_empty(), "truncated invocation trace");
+    ensure!(
+        !instructions[cursor..]
+            .iter()
+            .any(|i| i.program == PUMP || i.program == AMM),
+        "missing program completion"
+    );
     Ok(())
 }
 

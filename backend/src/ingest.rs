@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::mpsc;
 
 pub enum Raw {
-    Transaction(SubscribeUpdateTransaction),
+    Transaction(Box<SubscribeUpdateTransaction>),
     ChainTime(i64),
 }
 pub struct Batch {
@@ -116,17 +116,17 @@ pub async fn live(tx: mpsc::Sender<Raw>, m: Arc<Metrics>, checkpoint: String) ->
                         m.last_message_ms.store(now_ms(), Relaxed);
                         m.received.fetch_add(1, Relaxed);
                         let slot = t.slot;
-                        if !send(&tx, Raw::Transaction(t), &m).await {
+                        if !send(&tx, Raw::Transaction(Box::new(t)), &m).await {
                             return Ok(());
                         }
                         cursor = Some(cursor.unwrap_or(slot).max(slot));
                     }
                     Some(subscribe_update::UpdateOneof::BlockMeta(b)) => {
                         m.last_message_ms.store(now_ms(), Relaxed);
-                        if let Some(time) = b.block_time {
-                            if !send(&tx, Raw::ChainTime(time.timestamp * 1000), &m).await {
-                                return Ok(());
-                            }
+                        if let Some(time) = b.block_time
+                            && !send(&tx, Raw::ChainTime(time.timestamp * 1000), &m).await
+                        {
+                            return Ok(());
                         }
                     }
                     _ => {}

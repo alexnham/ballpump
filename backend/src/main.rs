@@ -34,7 +34,7 @@ async fn websocket(State(state): State<App>, upgrade: WebSocketUpgrade) -> impl 
             changed=rx.changed()=>{
                 if changed.is_err(){break;}
                 let msg=rx.borrow_and_update().clone();
-                if tokio::time::timeout(Duration::from_secs(5),sink.send(Message::Text(msg.into()))).await.is_ok_and(|r|r.is_ok()) == false{break;}
+                if !tokio::time::timeout(Duration::from_secs(5),sink.send(Message::Text(msg.into()))).await.is_ok_and(|r|r.is_ok()){break;}
             },
             msg=source.next()=>match msg {
                 Some(Ok(Message::Ping(p)))=>{if sink.send(Message::Pong(p)).await.is_err(){break;}},

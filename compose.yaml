@@ -1,0 +1,22 @@
+services:
+  ballpump:
+    build: .
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    environment:
+      SOURCE: ${SOURCE:-demo}
+      LASERSTREAM_ENDPOINT: ${LASERSTREAM_ENDPOINT:-}
+      LASERSTREAM_API_KEY: ${LASERSTREAM_API_KEY:-}
+      RUST_LOG: ${RUST_LOG:-ballpump=info,helius_laserstream=warn}
+    volumes:
+      - ballpump-data:/app/data
+    restart: unless-stopped
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ballpump-data:

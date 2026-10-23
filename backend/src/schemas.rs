@@ -54,6 +54,27 @@ pub struct TradeEvent {
     pub creator_fee_unclaimed: u64,
 }
 pub const TRADEEVENT_DISC: [u8; 8] = [189, 219, 127, 211, 78, 230, 97, 238];
+#[derive(Default, BorshDeserialize, BorshSerialize)]
+pub struct PostCompleteBuyEvent {
+    pub user: [u8; 32],
+    pub mint: [u8; 32],
+    pub bonding_curve: [u8; 32],
+    pub quote_mint: [u8; 32],
+    pub timestamp: i64,
+    pub base_out: u64,
+    pub quote_in: u64,
+    pub fee_basis_points: u64,
+    pub fee: u64,
+    pub creator_fee_basis_points: u64,
+    pub creator_fee: u64,
+    pub buyback_fee: u64,
+    pub pool_base_reserves_before: u64,
+    pub pool_quote_reserves_before: u64,
+    pub pool_base_reserves_after: u64,
+    pub pool_quote_reserves_after: u64,
+}
+pub const POSTCOMPLETEBUYEVENT_DISC: [u8; 8] = [111, 176, 109, 139, 49, 108, 213, 251];
+pub const MULTI_HOP_CURVE_SWAP_DISC: [u8; 8] = [225, 154, 117, 22, 215, 86, 246, 103];
 pub const PUMP_SPECS: &[TradeSpec] = &[
     TradeSpec {
         disc: [102, 6, 61, 18, 1, 218, 235, 234],
@@ -201,6 +222,24 @@ pub struct SellEvent {
     pub creator_fee_unclaimed: u64,
 }
 pub const SELLEVENT_DISC: [u8; 8] = [62, 47, 55, 10, 165, 3, 220, 42];
+#[derive(Default, BorshDeserialize, BorshSerialize)]
+pub struct BoostBuyAndBurnEvent {
+    pub timestamp: i64,
+    pub mint: [u8; 32],
+    pub bonding_curve: [u8; 32],
+    pub pool: [u8; 32],
+    pub authority: [u8; 32],
+    pub quote_amount_in_requested: u64,
+    pub quote_amount_in_used: u64,
+    pub base_amount_burned: u64,
+    pub virtual_quote_reserves: i128,
+    pub real_quote_reserves_after: u64,
+    pub base_reserves_after: u64,
+    pub boost_vault_remaining: u64,
+}
+pub const BOOSTBUYANDBURNEVENT_DISC: [u8; 8] = [63, 69, 28, 22, 48, 92, 194, 185];
+pub const BOOST_BUY_AND_BURN_DISC: [u8; 8] = [105, 68, 6, 175, 0, 7, 35, 162];
+pub const MULTI_HOP_SWAP_DISC: [u8; 8] = [43, 100, 73, 19, 233, 246, 111, 148];
 pub const PUMP_AMM_SPECS: &[TradeSpec] = &[
     TradeSpec {
         disc: [102, 6, 61, 18, 1, 218, 235, 234],
