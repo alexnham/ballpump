@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  label,
   demoSnapshot,
   radius,
   snapshotSchema,
@@ -30,7 +31,7 @@ describe("feed contract and sizing", () => {
   });
   it("bounds outliers and adapts to mobile", () => {
     expect(radius(1e20, 1e20, 1200, 600, 50)).toBeLessThanOrEqual(100);
-    expect(radius(1, 100, 350, 470, 50)).toBeGreaterThan(5);
+    expect(radius(1, 100, 350, 470, 50)).toBeGreaterThan(0);
     expect(radius(25, 100, 1200, 600, 50)).toBeLessThan(
       radius(100, 100, 1200, 600, 50),
     );
@@ -40,4 +41,33 @@ describe("feed contract and sizing", () => {
     expect(tokenUrl({ ...t, mint: "javascript:alert(1)" })).toBeUndefined();
     expect(tokenUrl(t)).toMatch(/^https:\/\/pump.fun\/coin\//);
   });
+});
+
+it("uses coin names, then tickers, without showing mint IDs as names", () => {
+  const t = demoSnapshot().net_flow[0];
+  expect(label({ ...t, name: "My Coin", symbol: "MC" })).toBe("My Coin");
+  expect(label({ ...t, name: null, symbol: "MC" })).toBe("MC");
+  expect(label({ ...t, name: null, symbol: null })).toBe("Unknown coin");
+});
+
+it("keeps ball areas proportional, including tiny and sub-SOL flows", () => {
+  for (const [width, height] of [
+    [1200, 720],
+    [319, 941],
+  ]) {
+    for (const max of [100, 0.1]) {
+      const largest = radius(max, max, width, height, 50);
+      const half = radius(max / 2, max, width, height, 50);
+      const quarter = radius(max / 4, max, width, height, 50);
+      expect(half ** 2 / largest ** 2).toBeCloseTo(0.5, 12);
+      expect(quarter / largest).toBeCloseTo(0.5, 12);
+      expect(radius(max / 10000, max, width, height, 50) / largest).toBeCloseTo(
+        0.01,
+        12,
+      );
+    }
+  }
+  expect(radius(0, 100, 1200, 720, 50)).toBe(0);
+  expect(radius(-1, 100, 1200, 720, 50)).toBe(0);
+  expect(radius(0, 0, 1200, 720, 50)).toBe(0);
 });

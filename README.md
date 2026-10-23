@@ -21,7 +21,7 @@ docker compose down
 
 If port 3000 is already occupied, use `PORT=3001 docker compose up --build -d` and open [port 3001](http://localhost:3001). Set `PORT=3001` in `.env` to keep that port for subsequent `up` commands.
 
-For live mode, copy `.env.example` to `.env`, set `SOURCE=live` and your LaserStream endpoint/key, then run `docker compose up -d` again. Compose injects only the source credentials and logging settings; the container keeps its own bind address, static asset path, and checkpoint path. Secrets are excluded from the image build context. A named volume preserves the replay cursor across container recreation; the in-memory window still needs replay/warm-up. `docker compose down` preserves this volume; `docker compose down -v` deletes it.
+For live mode, copy `.env.example` to `.env`, set `SOURCE=live` and your LaserStream endpoint/key, then run `docker compose up -d` again. Compose injects source credentials, the optional metadata RPC URL, and logging settings; the container keeps its own bind address, static asset path, and checkpoint path. Secrets are excluded from the image build context. A named volume preserves the replay cursor across container recreation; the in-memory window still needs replay/warm-up. `docker compose down` preserves this volume; `docker compose down -v` deletes it.
 
 The container runs as a non-root user, and its logs rotate at 10 MiB with three files retained. Its healthcheck verifies that HTTP responds; consult `/health`'s `status` for stream freshness and coverage. Published ports bind to localhost only.
 
@@ -61,9 +61,9 @@ LaserStream SDK → bounded raw channel (128)
                 → Axum WebSocket → React / Canvas / Matter.js
 ```
 
-One Rust service. No external database, message broker, or signing wallet. Modules live in `backend/src/`; UI code in `frontend/src/`. Official IDLs and their provenance live in `docs/upstream/`. Physics and rendering run independently of incoming snapshots. Ball positions persist between rankings, radii interpolate, size is bounded and nonlinear, and reduced-motion preferences freeze movement. A keyboard-accessible token list complements the canvas.
+One Rust service. No external database, message broker, or signing wallet. Modules live in `backend/src/`; UI code in `frontend/src/`. Official IDLs and their provenance live in `docs/upstream/`. Physics and rendering run independently of incoming snapshots. Ball positions persist between rankings, radii interpolate, ball area is proportional to the selected SOL metric (radius follows its square root), with one shared bounded scale and no minimum-size boost, and reduced-motion preferences freeze movement. A keyboard-accessible token list complements the canvas.
 
-Both live token symbols and images use safe fallbacks when metadata is unavailable. This MVP does not yet enrich token metadata. It supports supplied metadata in the wire contract.
+Both live token symbols and images use safe fallbacks when metadata is unavailable. The backend enriches leaderboard tokens with names, symbols, and images through [Helius getAssetBatch](https://www.helius.dev/docs/api-reference/das/getassetbatch). It uses the existing LaserStream key for the mainnet HTTP RPC, or optional `HELIUS_RPC_URL`. Lookups run separately from ingestion, at most every five seconds, with a five-minute cache and a 4,096-token bound. Missing metadata retries after five minutes; lookup errors retry on the next lookup tick. Only HTTPS artwork is displayed (IPFS URLs are normalized). Artwork loads directly from its host; missing/broken images use an initial and name fallback. Metadata is untrusted token-supplied content.
 
 ## Configuration
 
@@ -84,7 +84,7 @@ The Rust process loads `.env` from its working directory. Start it from the repo
 
 - `/ws`: approximately one full leaderboard snapshot per second; new clients immediately receive the latest snapshot. Both `net_flow` and `buy_volume` arrays are included so toggling needs no resubscription. Integer lamport totals are decimal strings.
 - `/health`: the current full snapshot, including source status and timestamp. HTTP 200 means the service is answering; inspect `status` for feed health.
-- `/metrics`: JSON counters for received transactions, decoded swaps, failures, non-SOL exclusions, duplicates, expired/future events, channel saturation, outer reconnect attempts, lag, latest aggregation time, and outgoing snapshot size. Provider cost is `null` because the stream does not supply billing data. `dropped_events=0` measures local channel drops only; it is not a claim about provider delivery.
+- `/metrics`: JSON counters for received transactions, decoded swaps, failures, partial diagnostic logs, unverified SOL-eligible calls, non-SOL exclusions, duplicates, expired/future events, channel saturation, outer reconnect attempts, lag, latest aggregation time, and outgoing snapshot size. Provider cost is `null` because the stream does not supply billing data. `dropped_events=0` measures local channel drops only; it is not a claim about provider delivery.
 - JSON logs add transactions/sec, swaps/sec, token count and status each second. SDK reconnect details appear in its own logs; the outer reconnect counter cannot count the SDK's silent retries.
 
 See [data semantics and coverage](docs/coverage.md), [decoder evidence](docs/decoding.md), and [validation results](docs/validation.md) before relying on live totals.
@@ -106,3 +106,7 @@ cargo run --release --manifest-path backend/Cargo.toml --example channel_load
 The smoke test starts its own service on port 3099, validates HTTP/WebSocket messages, disconnects and reconnects a client, and restarts the process. It requires no credentials. Golden fixtures cover both venues and quote exclusions; generated tests cover multi-hop/boost/post-completion events. Regenerate schemas after deliberately reviewing an IDL update with `python3 scripts/generate_decoder.py`, followed by `cargo fmt --manifest-path backend/Cargo.toml`.
 
 Buying pressure does not establish price appreciation, token safety, or legitimacy. BallPump is an analytics visualization, not a trading bot.
+
+The arena fills the browser viewport. Balls collide and bounce at the screen edges; drag and release a ball to throw it, or click to open its Pump.fun page. Floating controls select the rolling metric, pause motion, and open an accessible token list. Reduced-motion preferences pause automatic movement initially; Resume explicitly enables it.
+
+If historical replay remains behind, set `REPLAY_ON_START=false` and recreate the container with `docker compose up -d`. This explicitly starts at the current finalized head, ignores the saved startup cursor, and builds a fresh trailing window while showing warming for at least 600 seconds. Reconnects within the running process still replay from its last received slot. Startup history is intentionally incomplete; this is not a gap-free recovery claim. Default: `true` preserves historical startup replay.

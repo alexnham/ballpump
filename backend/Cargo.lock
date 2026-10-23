@@ -211,6 +211,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "helius-laserstream",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

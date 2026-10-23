@@ -4,9 +4,11 @@ services:
     ports:
       - "127.0.0.1:${PORT:-3000}:3000"
     environment:
+      REPLAY_ON_START: ${REPLAY_ON_START:-true}
       SOURCE: ${SOURCE:-demo}
       LASERSTREAM_ENDPOINT: ${LASERSTREAM_ENDPOINT:-}
       LASERSTREAM_API_KEY: ${LASERSTREAM_API_KEY:-}
+      HELIUS_RPC_URL: ${HELIUS_RPC_URL:-}
       RUST_LOG: ${RUST_LOG:-ballpump=info,helius_laserstream=warn}
     volumes:
       - ballpump-data:/app/data

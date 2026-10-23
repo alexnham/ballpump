@@ -9,7 +9,7 @@ use axum::{
 };
 use ballpump::{
     aggregate::{Insert, Window},
-    ingest,
+    ingest, metadata,
     metrics::Metrics,
     model::*,
 };
@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         snapshots: subscriber,
         metrics: m.clone(),
     };
+    let (metadata_requests, metadata_catalog) = metadata::start();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         let mut warm_until = now_ms() + WINDOW_MS;
@@ -127,7 +128,11 @@ async fn main() -> anyhow::Result<()> {
                     let stale=now-m.last_message_ms.load(Relaxed)>15_000 || now-m.latest_chain_ms.load(Relaxed)>60_000;
                     if stale {warm_until=now+WINDOW_MS;}
                     let status=if demo {"demo"}else if stale {"stale"}else if now<m.decode_degraded_until.load(Relaxed){"degraded"}else if now<warm_until {"warming"}else{"live"};
-                    let snapshot=window.snapshot(status.into(),demo);
+                    let mut snapshot=window.snapshot(status.into(),demo);
+                    if !demo {
+                        metadata_requests.send_replace(snapshot.net_flow.iter().chain(snapshot.buy_volume.iter()).map(|t|t.mint.clone()).collect());
+                        metadata::enrich(&mut snapshot, &metadata_catalog.borrow());
+                    }
                     if let Ok(json)=serde_json::to_string(&snapshot){m.snapshot_bytes.store(json.len() as u64,Relaxed);publisher.send_replace(json);}
                     let received=m.received.load(Relaxed);let swaps=m.swaps.load(Relaxed);
                     tracing::info!(transactions_per_second=received-previous_received,swaps_per_second=swaps-previous_swaps,indexed_tokens=snapshot.indexed_tokens,status,metrics=?m.report(),"snapshot published");

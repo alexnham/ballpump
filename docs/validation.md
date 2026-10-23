@@ -2,14 +2,15 @@
 
 ## Passed
 
-- `cargo test --manifest-path backend/Cargo.toml`: 11 tests (3 rolling-window unit tests and 8 decoder/replay integration tests).
+- `cargo test --manifest-path backend/Cargo.toml`: 19 tests (3 rolling-window unit tests, 2 metadata tests, and 14 decoder/replay integration tests).
 - Exact 600-second cutoff, out-of-order insertion, duplicate event identity, simultaneous buys/sells, negative/zero net flow, future timestamps, and totals exceeding `u64`.
 - Seven recorded SOL trade examples across both venues and both directions; four recorded non-SOL exclusions; a recorded program mention with no trade.
 - Curve balance reconciliation and four independent WSOL vault reconciliations.
 - Invocation ancestry, caught CPI failure, failed transaction, malformed events, multiple swaps per signature, and rebuilding a fresh window with replay.
+- Paired LaserStream/RPC regression for truncated trailing logs, proven outer success, unresolved inner-call exclusion, spoofed log-text rejection, non-SOL uncertainty, and partial-trace ingestion metrics.
 - Schema-built multi-hop/boost/post-completion cases, explicitly distinguished from observed golden examples.
 - `cargo fmt --check` and Clippy on all targets with warnings denied.
-- `npm test --prefix frontend`: 4 tests for the wire contract, integer serialization, demo rankings, bounded radii, and unsafe URL rejection.
+- `npm test --prefix frontend`: 9 tests for the wire contract, integer serialization, demo rankings, bounded radii, unsafe URL rejection, coin-name fallbacks, ball momentum transfer, and viewport wall bounces (including low speeds).
 - Frontend TypeScript strict checking and Vite production build: approximately 404 kB JS / 124 kB gzip.
 - `node scripts/smoke.mjs`: live local HTTP and WebSocket endpoints, current full snapshot on reconnect, demo integer contract, and service restart.
 - Desktop Chrome visually displayed the arena, correct demo label, readable ball labels, and switched to gross buy volume.
@@ -41,9 +42,22 @@ The direct load example also expires the entire window and asserts that no token
 
 ## Still unverified
 
-- Credentialed LaserStream connection, provisioned endpoint availability, bandwidth/billing, replay bounds in practice, controlled outages, terminal SDK reconnects, and complete restoration under a real provider restart. No gap-free coverage claim.
+- Controlled outages, provider billing, replay bounds, terminal SDK reconnects, and complete restoration under a real provider restart. Credentialed ingestion is running; historical startup replay was observed not to catch up on this connection. The local run explicitly uses `REPLAY_ON_START=false` and warms a fresh window. No gap-free coverage claim.
 - Economic reconciliation of observed multi-hop, boost, synthetic post-completion, and single-venue v2/v3 SOL trades. Their parsing is schema-tested; non-SOL v3 samples are observed exclusions.
-- Historical shorter event layouts and future incompatible protocol layouts; these fail closed.
+- Historical shorter event layouts and future incompatible protocol layouts; these fail closed. Unresolved inner outcomes still reduce coverage; benign clipping of unrelated trailing logs does not.
 - Sustained mainnet decoding throughput and soak behavior, including real signatures and actual transaction sizes.
-- Mobile visual inspection and a measured frontend FPS run. Browser automation detached/timed out during the final responsive checks. The app includes a `data-fps` diagnostic on its canvas, responsive CSS, and reduced-motion handling, but no numeric frame-rate claim is made.
-- Token metadata enrichment. Live views use mint fallbacks until symbols/images are supplied.
+- A controlled sustained frontend FPS measurement across devices. The canvas exposes `data-fps`, ball count, and loaded-image count; no numeric performance guarantee is made.
+- Missing or broken remote artwork, and metadata availability for every ranked mint. The DAS response shape was checked with three current live mints; names, symbols, and HTTPS artwork were returned. Metadata parser and both leaderboard enrichments are tested without modifying accounting.
+
+## Fullscreen arena update
+
+- Checked the full-viewport canvas at 1280 × 720 with no document overflow, metric switching, and the accessible token list in the in-app browser.
+- Verified pointer dragging on a paused ball. The system reports reduced motion; the app starts paused and an explicit Resume enables the physics simulation.
+- Rebuilt the frontend with TypeScript strict checking and Vite, ran the eight frontend tests, and passed Rust release tests, formatting, and Clippy with warnings denied.
+- Packaged the checked Linux Rust binary in the normal runtime image and restarted with Docker Compose. Credentials remain server-side.
+
+- Live WebSocket verification: full snapshots on two connections, 100 ranked tokens, 95 names and 94 artwork URLs at observation, positive lossless net-lamport strings.
+- Inspected actual live artwork in the fullscreen arena at a narrow 319 × 941 viewport and corrected the compact header. Inspected the desktop layout at 1280 × 720.
+- Verified startup from the finalized head with `REPLAY_ON_START=false`: live ingestion lag about one second, fresh visible trades, and incomplete/degraded status retained.
+
+- Proportional sizing: area ratios are exact at 2×/4× flow, including sub-SOL values, tiny flows, and desktop/mobile dimensions. Removed the minimum-radius boost. Nine frontend tests and the production build passed; the live view was visually checked.

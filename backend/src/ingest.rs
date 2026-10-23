@@ -36,7 +36,12 @@ pub async fn decode_loop(mut rx: mpsc::Receiver<Raw>, tx: mpsc::Sender<Batch>, m
                         m.swaps.fetch_add(d.trades.len() as u64, Relaxed);
                         m.failures.fetch_add(d.failures, Relaxed);
                         m.excluded.fetch_add(d.excluded_quotes, Relaxed);
-                        if d.failures > 0 {
+                        if d.trace.incomplete {
+                            m.partial_traces.fetch_add(1, Relaxed);
+                        }
+                        m.unverified_trade_calls
+                            .fetch_add(d.trace.unverified_trade_calls, Relaxed);
+                        if d.failures > 0 || d.trace.unverified_trade_calls > 0 {
                             m.decode_degraded_until.store(now_ms() + WINDOW_MS, Relaxed);
                         }
                         d.trades
@@ -60,11 +65,21 @@ pub async fn live(tx: mpsc::Sender<Raw>, m: Arc<Metrics>, checkpoint: String) ->
         .context("LASERSTREAM_ENDPOINT is required in live mode")?;
     let key = std::env::var("LASERSTREAM_API_KEY")
         .context("LASERSTREAM_API_KEY is required in live mode")?;
+    let replay_on_start: bool = std::env::var("REPLAY_ON_START")
+        .unwrap_or_else(|_| "true".into())
+        .parse()
+        .context("REPLAY_ON_START must be true or false")?;
     let mut cursor = tokio::fs::read_to_string(checkpoint)
         .await
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .map(|s| s.saturating_sub(6000));
+    if !replay_on_start {
+        cursor = None;
+        tracing::warn!(
+            "startup replay disabled; building a fresh trailing window from the live head"
+        );
+    }
     loop {
         let config =
             LaserstreamConfig::new(endpoint.clone(), key.clone()).with_max_reconnect_attempts(3);
@@ -76,9 +91,13 @@ pub async fn live(tx: mpsc::Sender<Raw>, m: Arc<Metrics>, checkpoint: String) ->
                 .await?
                 .slot;
             let first = client.subscribe_replay_info().await?.first_available;
-            let requested = cursor
-                .map(|s| s.saturating_sub(2))
-                .unwrap_or(head.saturating_sub(6000));
+            let requested = cursor.map(|s| s.saturating_sub(2)).unwrap_or_else(|| {
+                if replay_on_start {
+                    head.saturating_sub(6000)
+                } else {
+                    head
+                }
+            });
             let from_slot = first.map(|first| requested.max(first));
             if from_slot != Some(requested) {
                 tracing::warn!(

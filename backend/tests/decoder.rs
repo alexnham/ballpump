@@ -231,7 +231,9 @@ fn failed_malformed_and_unattributed_events() {
         .unwrap()
         .log_messages
         .pop();
-    assert!(decoder::normalize(&p).is_err());
+    let partial = decoder::normalize(&p).unwrap();
+    assert!(partial.trace.incomplete);
+    assert_eq!(decoder::decode(&partial).trades.len(), 1);
 }
 #[test]
 fn multiple_swaps_and_restart_replay_are_idempotent() {
@@ -354,6 +356,7 @@ fn schema_derived_route_boost_and_post_completion_events() {
         signature: "route".into(),
         slot: 1,
         failed: false,
+        trace: Default::default(),
         instructions: ixs,
     };
     let d = decoder::decode(&tx);
@@ -383,6 +386,7 @@ fn schema_derived_route_boost_and_post_completion_events() {
         signature: "boost".into(),
         slot: 1,
         failed: false,
+        trace: Default::default(),
         instructions: ixs,
     });
     assert_eq!(d.failures, 0);
@@ -425,9 +429,168 @@ fn schema_derived_route_boost_and_post_completion_events() {
         signature: "curve-route".into(),
         slot: 1,
         failed: false,
+        trace: Default::default(),
         instructions: ixs,
     });
     assert_eq!(d.failures, 0);
     assert_eq!(d.trades.len(), 2);
     assert_eq!(d.trades.iter().map(|t| t.quote_lamports).sum::<u64>(), 500);
+}
+
+#[test]
+fn streamed_truncated_tail_preserves_verified_trades() {
+    let clipped = observed("observed-stream-truncated");
+    assert!(clipped.trace.incomplete);
+    assert_eq!(clipped.trace.unverified_trade_calls, 0);
+    let actual = decoder::decode(&clipped);
+    let complete = decoder::decode(&observed("observed-stream-complete"));
+    assert!(actual.trades.len() as u64 + actual.excluded_quotes > 0);
+    assert_eq!(actual.excluded_quotes, complete.excluded_quotes);
+    assert_eq!(actual.failures, 0);
+    assert_eq!(
+        serde_json::to_value(actual.trades).unwrap(),
+        serde_json::to_value(complete.trades).unwrap()
+    );
+}
+#[test]
+fn truncated_inner_trade_stays_unverified_but_outer_success_is_known() {
+    let mut p = proto("observed-pump-0");
+    let logs = &mut p
+        .transaction
+        .as_mut()
+        .unwrap()
+        .meta
+        .as_mut()
+        .unwrap()
+        .log_messages;
+    let event = logs
+        .iter()
+        .position(|l| l == &format!("Program {PUMP} invoke [2]"))
+        .unwrap();
+    logs.truncate(event + 1);
+    logs.push("Log truncated".into());
+    let tx = decoder::normalize(&p).unwrap();
+    assert!(tx.trace.unverified_trade_calls > 0);
+    assert!(decoder::decode(&tx).trades.is_empty());
+    let logs = &mut p
+        .transaction
+        .as_mut()
+        .unwrap()
+        .meta
+        .as_mut()
+        .unwrap()
+        .log_messages;
+    logs.pop();
+    logs.push(format!("Program {PUMP} success"));
+    logs.push("Log truncated".into());
+    let tx = decoder::normalize(&p).unwrap();
+    assert_eq!(tx.trace.unverified_trade_calls, 0);
+    assert_eq!(decoder::decode(&tx).trades.len(), 1);
+}
+#[test]
+fn successful_event_inside_unfinished_inner_parent_is_not_accepted() {
+    let mut tx = observed("observed-pump-0");
+    let outer = tx
+        .instructions
+        .iter()
+        .find(|i| i.program == PUMP && i.stack_height == 1)
+        .unwrap()
+        .clone();
+    let mut event = tx
+        .instructions
+        .iter()
+        .find(|i| i.program == PUMP && i.data.starts_with(&[228, 69, 165, 46, 81, 203, 154, 29]))
+        .unwrap()
+        .clone();
+    let root = Instruction {
+        program: "router".into(),
+        accounts: vec![],
+        data: vec![],
+        stack_height: 1,
+        succeeded: false,
+        outer_index: 0,
+        inner_index: None,
+    };
+    let mut parent = outer;
+    parent.stack_height = 2;
+    parent.outer_index = 0;
+    parent.inner_index = Some(0);
+    event.stack_height = 3;
+    event.outer_index = 0;
+    event.inner_index = Some(1);
+    tx.instructions = vec![root, parent, event];
+    tx.trace = decoder::apply_log_outcomes(
+        &mut tx.instructions,
+        &[
+            "Program router invoke [1]".into(),
+            format!("Program {PUMP} invoke [2]"),
+            format!("Program {PUMP} invoke [3]"),
+            format!("Program {PUMP} success"),
+            "Log truncated".into(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(tx.trace.unverified_trade_calls, 1);
+    assert!(decoder::decode(&tx).trades.is_empty());
+}
+#[test]
+fn program_log_text_cannot_spoof_runtime_invocations() {
+    let mut p = proto("observed-pump-0");
+    p.transaction
+        .as_mut()
+        .unwrap()
+        .meta
+        .as_mut()
+        .unwrap()
+        .log_messages
+        .insert(1, "Program log: attacker invoke [9]".into());
+    let tx = decoder::normalize(&p).unwrap();
+    assert!(!tx.trace.incomplete);
+    assert_eq!(decoder::decode(&tx).trades.len(), 1);
+}
+#[tokio::test]
+async fn benign_partial_logs_are_counted_without_degrading_the_feed() {
+    use ballpump::{
+        ingest::{self, Raw},
+        metrics::Metrics,
+    };
+    use std::sync::{Arc, atomic::Ordering::Relaxed};
+    let metrics = Arc::new(Metrics::default());
+    let (raw_tx, raw_rx) = tokio::sync::mpsc::channel(1);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let worker = tokio::spawn(ingest::decode_loop(raw_rx, tx, metrics.clone()));
+    raw_tx
+        .send(Raw::Transaction(Box::new(proto(
+            "observed-stream-truncated",
+        ))))
+        .await
+        .unwrap();
+    drop(raw_tx);
+    let batch = rx.recv().await.unwrap();
+    worker.await.unwrap();
+    assert_eq!(batch.slot, 460550433);
+    assert!(metrics.excluded.load(Relaxed) > 0);
+    assert_eq!(metrics.partial_traces.load(Relaxed), 1);
+    assert_eq!(metrics.unverified_trade_calls.load(Relaxed), 0);
+    assert_eq!(metrics.failures.load(Relaxed), 0);
+    assert_eq!(metrics.decode_degraded_until.load(Relaxed), 0);
+}
+
+#[test]
+fn unverified_non_sol_calls_do_not_degrade_sol_rankings() {
+    let mut p = proto("observed-amm-0");
+    p.transaction
+        .as_mut()
+        .unwrap()
+        .meta
+        .as_mut()
+        .unwrap()
+        .log_messages
+        .clear();
+    let tx = decoder::normalize(&p).unwrap();
+    assert!(tx.trace.incomplete);
+    assert_eq!(tx.trace.unverified_trade_calls, 0);
+    let d = decoder::decode(&tx);
+    assert!(d.trades.is_empty());
+    assert_eq!(d.failures, 0);
 }

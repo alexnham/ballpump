@@ -28,7 +28,7 @@ export type Snapshot = z.infer<typeof snapshotSchema>;
 export type Metric = "net_flow" | "buy_volume";
 export const sol = (value: string) => Number(BigInt(value)) / 1e9; // Display only; accounting stays in integers.
 export const label = (t: Token) =>
-  t.symbol || `${t.mint.slice(0, 4)}…${t.mint.slice(-4)}`;
+  t.name?.trim() || t.symbol?.trim() || "Unknown coin";
 export function tokenUrl(t: Token) {
   return mint.safeParse(t.mint).success
     ? `https://pump.fun/coin/${t.mint}`
@@ -50,10 +50,9 @@ export function radius(
       Math.sqrt((width * height) / (Math.max(count, 1) * Math.PI)) * 0.86,
     ),
   );
-  const floor = Math.min(24, ceiling * 0.55);
-  return (
-    floor + (ceiling - floor) * Math.sqrt(Math.max(0, value) / Math.max(1, max))
-  );
+  if (max <= 0 || value <= 0) return 0;
+  // One shared scale: area is proportional to SOL, without a minimum-size boost.
+  return ceiling * Math.sqrt(Math.min(value / max, 1));
 }
 const names = [
   "MOCHI",

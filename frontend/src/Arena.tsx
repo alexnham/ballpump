@@ -8,7 +8,8 @@ import {
   type Token,
   type Metric,
 } from "./data";
-const { Engine, Bodies, Body, Composite } = Matter;
+import { ball, boundaries, bounceAtEdges } from "./physics";
+const { Engine, Body, Composite, Constraint } = Matter;
 const colors = [
   "#83b9ff",
   "#f8a5d6",
@@ -26,6 +27,7 @@ type Orb = {
   color: string;
   pulse: number;
   image?: HTMLImageElement;
+  imageUrl?: string | null;
 };
 export function Arena({
   tokens,
@@ -57,7 +59,6 @@ export function Arena({
     let hovered: string | null = null;
     let frameCount = 0;
     let frameStart = performance.now();
-    const reduced = matchMedia("(prefers-reduced-motion: reduce)");
     const resize = () => {
       const rect = el.getBoundingClientRect();
       width = rect.width;
@@ -67,31 +68,49 @@ export function Arena({
       el.height = height * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       Composite.remove(engine.world, walls);
-      walls = [
-        Bodies.rectangle(width / 2, -35, width + 120, 70, { isStatic: true }),
-        Bodies.rectangle(width / 2, height + 35, width + 120, 70, {
-          isStatic: true,
-        }),
-        Bodies.rectangle(-35, height / 2, 70, height + 120, { isStatic: true }),
-        Bodies.rectangle(width + 35, height / 2, 70, height + 120, {
-          isStatic: true,
-        }),
-      ];
+      walls = boundaries(width, height);
+      for (const orb of orbs.values()) {
+        Body.setPosition(orb.body, {
+          x: Math.max(orb.r, Math.min(width - orb.r, orb.body.position.x)),
+          y: Math.max(orb.r, Math.min(height - orb.r, orb.body.position.y)),
+        });
+      }
       Composite.add(engine.world, walls);
       lastTokens = null;
     };
     const observer = new ResizeObserver(resize);
     observer.observe(el);
     resize();
+    const loadImage = (orb: Orb, token: Token) => {
+      if (orb.imageUrl === token.image_url) return;
+      orb.imageUrl = token.image_url;
+      orb.image = undefined;
+      if (!token.image_url) return;
+      try {
+        const url = new URL(token.image_url);
+        if (url.protocol !== "https:") return;
+        const image = new Image();
+        image.referrerPolicy = "no-referrer";
+        image.src = url.href;
+        orb.image = image;
+      } catch {
+        /* Missing or invalid artwork uses the name fallback. */
+      }
+    };
     const sync = () => {
       const state = latest.current;
       const max = Math.max(
-        1,
+        0,
         ...state.tokens.map((t) => score(t, state.metric)),
       );
       const active = new Set(state.tokens.map((t) => t.mint));
       for (const [id, orb] of orbs) {
         if (!active.has(id)) {
+          if (drag?.orb === orb) {
+            Composite.remove(engine.world, drag.constraint);
+            drag = null;
+            suppressClick = true;
+          }
           Composite.remove(engine.world, orb.body);
           orbs.delete(id);
         }
@@ -109,6 +128,7 @@ export function Arena({
           existing.target = target;
           if (existing.token.trade_count !== token.trade_count)
             existing.pulse = 1;
+          loadImage(existing, token);
           existing.token = token;
           return;
         }
@@ -116,16 +136,12 @@ export function Arena({
         const spread = Math.sqrt((i + 0.5) / state.tokens.length);
         const x = width / 2 + Math.cos(angle) * spread * width * 0.43;
         const y = height / 2 + Math.sin(angle) * spread * height * 0.43;
-        const body = Bodies.circle(x, y, target, {
-          restitution: 0.96,
-          friction: 0,
-          frictionAir: 0,
-          slop: 0.05,
-        });
-        Body.setVelocity(body, {
-          x: Math.sin(i * 2.4 + 1) * 0.42,
-          y: Math.cos(i * 1.7) * 0.42,
-        });
+        const body = ball(
+          Math.max(target, Math.min(width - target, x)),
+          Math.max(target, Math.min(height - target, y)),
+          target,
+          i * 2.4 + 1,
+        );
         Composite.add(engine.world, body);
         const orb: Orb = {
           body,
@@ -135,24 +151,15 @@ export function Arena({
           color: colors[i % colors.length],
           pulse: 0,
         };
-        if (token.image_url) {
-          try {
-            const url = new URL(token.image_url);
-            if (url.protocol === "https:") {
-              const img = new Image();
-              img.crossOrigin = "anonymous";
-              img.referrerPolicy = "no-referrer";
-              img.src = url.href;
-              orb.image = img;
-            }
-          } catch {
-            /* Invalid metadata uses text fallback. */
-          }
-        }
+        loadImage(orb, token);
         orbs.set(token.mint, orb);
       });
       if (lastTokens === null) {
-        for (let i = 0; i < 100; i++) Engine.update(engine, 1000 / 60);
+        for (let i = 0; i < 80; i++) {
+          for (const orb of orbs.values())
+            bounceAtEdges(orb.body, orb.r, width, height);
+          Engine.update(engine, 1000 / 60);
+        }
       }
       lastTokens = state.tokens;
     };
@@ -160,28 +167,20 @@ export function Arena({
       if (latest.current.tokens !== lastTokens) sync();
       const dt = Math.min(32, now - (last || now));
       last = now;
-      const moving = !latest.current.paused && !reduced.matches;
+      const moving = !latest.current.paused;
       for (const orb of orbs.values()) {
         const next = orb.r + (orb.target - orb.r) * (1 - Math.exp(-dt / 380));
         if (Math.abs(next - orb.r) > 0.001) {
           Body.scale(orb.body, next / orb.r, next / orb.r);
           orb.r = next;
         }
-        const p = orb.body.position;
-        const r = orb.r;
-        const x = Math.max(r, Math.min(width - r, p.x)),
-          y = Math.max(r, Math.min(height - r, p.y));
-        if (x !== p.x || y !== p.y) Body.setPosition(orb.body, { x, y });
-        if (moving && orb.body.speed < 0.16)
-          Body.setVelocity(orb.body, {
-            x: Math.sin(now / 5000 + r) * 0.22,
-            y: Math.cos(now / 7000 + r) * 0.22,
-          });
       }
       // A fixed physics step keeps tab stalls from launching balls through boundaries.
       if (moving) {
         accumulator += dt;
         while (accumulator >= 1000 / 60) {
+          for (const orb of orbs.values())
+            bounceAtEdges(orb.body, orb.r, width, height);
           Engine.update(engine, 1000 / 60);
           accumulator -= 1000 / 60;
         }
@@ -240,28 +239,49 @@ export function Arena({
           ctx.stroke();
         }
         const image = orb.image;
-        if (image?.complete && image.naturalWidth) {
+        const hasImage = image?.complete && image.naturalWidth;
+        if (hasImage) {
           ctx.save();
           ctx.beginPath();
-          ctx.arc(0, -r * 0.27, r * 0.23, 0, Math.PI * 2);
+          ctx.arc(0, 0, r - 1, 0, Math.PI * 2);
           ctx.clip();
-          ctx.drawImage(image, -r * 0.23, -r * 0.5, r * 0.46, r * 0.46);
+          const scale = Math.max(
+            (2 * r) / image.naturalWidth,
+            (2 * r) / image.naturalHeight,
+          );
+          ctx.drawImage(
+            image,
+            (-image.naturalWidth * scale) / 2,
+            (-image.naturalHeight * scale) / 2,
+            image.naturalWidth * scale,
+            image.naturalHeight * scale,
+          );
+          const shade = ctx.createLinearGradient(0, -r, 0, r);
+          shade.addColorStop(0, "#10162400");
+          shade.addColorStop(0.4, "#10162415");
+          shade.addColorStop(1, "#101624ed");
+          ctx.fillStyle = shade;
+          ctx.fillRect(-r, -r, 2 * r, 2 * r);
           ctx.restore();
         } else if (r > 36) {
           ctx.fillStyle = orb.color;
-          ctx.font = `${Math.min(27, r * 0.38)}px sans-serif`;
           ctx.textAlign = "center";
+          ctx.font = `600 ${Math.min(32, r * 0.5)}px "Space Grotesk",sans-serif`;
           ctx.fillText(
-            ["✦", "●", "✿", "◈", "✧", "◉"][Math.floor(r) % 6],
+            (orb.token.symbol || label(orb.token)).slice(0, 1).toUpperCase(),
             0,
-            -r * 0.2,
+            -r * 0.18,
           );
         }
         ctx.textAlign = "center";
         ctx.fillStyle = "#f1f4ff";
-        ctx.font = `600 ${Math.max(9, Math.min(17, r * 0.24))}px "Trebuchet MS",sans-serif`;
+        ctx.shadowColor = "#000";
+        ctx.shadowBlur = 5;
+        ctx.font = `600 ${Math.max(9, Math.min(17, r * 0.24))}px "Space Grotesk",sans-serif`;
         ctx.fillText(
-          label(orb.token).slice(0, 12),
+          label(orb.token).length > 20
+            ? label(orb.token).slice(0, 19) + "…"
+            : label(orb.token),
           0,
           r > 36 ? r * 0.15 : 1,
           r * 1.72,
@@ -283,6 +303,12 @@ export function Arena({
         el.dataset.fps = String(
           Math.round((frameCount * 1000) / (now - frameStart)),
         );
+        el.dataset.balls = String(orbs.size);
+        el.dataset.images = String(
+          [...orbs.values()].filter(
+            (o) => o.image?.complete && o.image.naturalWidth,
+          ).length,
+        );
         frameCount = 0;
         frameStart = now;
       }
@@ -301,26 +327,116 @@ export function Arena({
             ) < o.r,
         );
     };
+    let drag: {
+      orb: Orb;
+      constraint: Matter.Constraint;
+      startX: number;
+      startY: number;
+      moved: boolean;
+      x: number;
+      y: number;
+      time: number;
+      vx: number;
+      vy: number;
+    } | null = null;
+    let suppressClick = false;
+    const down = (e: PointerEvent) => {
+      const orb = hit(e);
+      if (!orb || drag || !e.isPrimary || e.button !== 0) return;
+      const rect = el.getBoundingClientRect();
+      const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      const constraint = Constraint.create({
+        pointA: point,
+        bodyB: orb.body,
+        pointB: {
+          x: point.x - orb.body.position.x,
+          y: point.y - orb.body.position.y,
+        },
+        stiffness: 0.12,
+        damping: 0.1,
+        length: 0,
+      });
+      Composite.add(engine.world, constraint);
+      drag = {
+        orb,
+        constraint,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+        x: point.x,
+        y: point.y,
+        time: e.timeStamp,
+        vx: 0,
+        vy: 0,
+      };
+      suppressClick = false;
+      el.setPointerCapture(e.pointerId);
+    };
+    const up = (e: PointerEvent) => {
+      if (!drag) return;
+      Composite.remove(engine.world, drag.constraint);
+      suppressClick = drag.moved || e.type === "pointercancel";
+      if (e.timeStamp - drag.time > 100) {
+        drag.vx = 0;
+        drag.vy = 0;
+      }
+      if (drag.moved)
+        Body.setVelocity(drag.orb.body, {
+          x: Math.max(-12, Math.min(12, drag.vx)),
+          y: Math.max(-12, Math.min(12, drag.vy)),
+        });
+      drag = null;
+      if (el.hasPointerCapture(e.pointerId))
+        el.releasePointerCapture(e.pointerId);
+    };
     const move = (e: PointerEvent) => {
+      if (drag) {
+        const rect = el.getBoundingClientRect();
+        const x = e.clientX - rect.left,
+          y = e.clientY - rect.top;
+        const dt = Math.max(1, e.timeStamp - drag.time);
+        drag.vx = ((x - drag.x) * 16.667) / dt;
+        drag.vy = ((y - drag.y) * 16.667) / dt;
+        drag.constraint.pointA = { x, y };
+        drag.moved ||=
+          Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 6;
+        if (latest.current.paused)
+          Body.setPosition(drag.orb.body, {
+            x: Math.max(drag.orb.r, Math.min(width - drag.orb.r, x)),
+            y: Math.max(drag.orb.r, Math.min(height - drag.orb.r, y)),
+          });
+        drag.x = x;
+        drag.y = y;
+        drag.time = e.timeStamp;
+        el.style.cursor = "grabbing";
+        return;
+      }
       const orb = hit(e);
       const id = orb?.token.mint || null;
       if (id !== hovered) {
         hovered = id;
         setHover(orb?.token || null);
       }
-      el.style.cursor = orb && !latest.current.demo ? "pointer" : "default";
+      el.style.cursor = orb ? "grab" : "default";
     };
     const leave = () => {
       hovered = null;
       setHover(null);
     };
     const click = (e: MouseEvent) => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
       const orb = hit(e);
       if (orb && !latest.current.demo) {
         const url = tokenUrl(orb.token);
         if (url) window.open(url, "_blank", "noopener,noreferrer");
       }
     };
+    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerleave", leave);
     el.addEventListener("click", click);
@@ -329,6 +445,9 @@ export function Arena({
       observer.disconnect();
       Composite.clear(engine.world, false);
       Engine.clear(engine);
+      el.removeEventListener("pointerdown", down);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerleave", leave);
       el.removeEventListener("click", click);
@@ -338,7 +457,7 @@ export function Arena({
     <div className="canvas-wrap">
       <canvas
         ref={canvas}
-        aria-label="Animated token arena. The token list below provides accessible links and values."
+        aria-label="Animated token arena. Open the token list for accessible links and values. Drag balls to throw them."
       />
       {hover && (
         <div className="orb-tooltip">

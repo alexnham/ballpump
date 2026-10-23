@@ -2,7 +2,7 @@
 
 The decoder consumes the actual LaserStream protobuf types re-exported by the pinned SDK. Fixture tests construct those same types from recorded RPC transactions, then exercise production normalization and decoding. Both static and lookup-table account addresses, instruction ordering, inner stack heights, and invocation outcomes participate.
 
-A successful transaction is insufficient: invocation logs verify each call's completion, including ancestors. If a router catches a failed trade CPI, its emitted events are excluded. Monetary values come from Borsh CPI-event data, not logs. A recognized event must be directly emitted by a matching trade invocation of the same program, at the next stack depth. Pump event mints and directions and AMM event pools are checked against that invocation's accounts. Unknown-parent trade events increment failures instead of being silently accepted.
+Successful transaction metadata proves top-level calls succeeded. Inner trade/event calls additionally require successful invocation outcomes for themselves and every inner ancestor. If a router catches a failed trade CPI, its emitted events are excluded. Monetary values come from Borsh CPI-event data, not logs. A recognized event must be directly emitted by a matching trade invocation of the same program, at the next stack depth. Pump event mints and directions and AMM event pools are checked against that invocation's accounts. Unknown-parent trade events increment failures instead of being silently accepted.
 
 ## Recorded examples
 
@@ -30,5 +30,13 @@ For example, `observed-amm-sol-1` records a 12,993,689-lamport input budget. Its
 Mutated observed transactions test whole-transaction failure, missing parents, truncated event data, missing invocation completion, multiple swaps under one signature, and replay into a fresh aggregator. A dedicated invocation-trace fixture tests an event emitted inside a CPI that fails while its outer router succeeds.
 
 Schema-derived Borsh fixtures test multi-hop pool buys, SOL curve legs, boost buy-and-burn actual-used amounts, and the additional synthetic post-completion buy event. They establish parsing and context handling; they do **not** independently validate those paths' economic semantics. Add observed transactions and balance reconciliation for these paths before claiming full validated protocol coverage.
+
+## Partial invocation logs
+
+The paired `observed-stream-truncated` and `observed-stream-complete` fixtures refer to the same public transaction at slot 460550433. The first was captured from LaserStream while reproducing the reported warning; the second was fetched from public mainnet RPC. The stream's 145-line log ends with `Log truncated` during a later token-program call; RPC returns 150 lines. Completed trade branches precede that tail. Tests assert identical decoded trade results and quote exclusions for both payloads.
+
+The validator uses the instruction metadata to establish ancestry. It reads the unambiguous log prefix, retains known outcomes, and stops on truncation or a mismatch. It does not assume that an unresolved CPI succeeded. A completed event beneath an unresolved inner parent is excluded because the parent might subsequently fail. Conversely, an absent top-level success log does not erase the transaction metadata's proof of outer success. Program-emitted `Program log:` text cannot impersonate runtime invocation messages.
+
+`partial_log_transactions` counts partial diagnostics without classifying the transaction envelope as invalid. `unverified_trade_calls` counts uncertain SOL-eligible trade calls; these still mark coverage degraded. Known non-SOL calls cannot change the SOL rankings and do not cause a coverage alarm merely because their diagnostic logs are missing. Malformed instruction ancestry and missing transaction metadata remain hard validation errors.
 
 The official IDLs can lag the deployed program: the captured events carry an additional trailing 8 bytes. The parser reads the complete known schema prefix and leaves trailing fields uninterpreted. It rejects shorter schemas. Upgrade the pinned schemas deliberately and rerun golden fixtures when protocol changes occur.

@@ -16,11 +16,18 @@ pub struct Instruction {
     pub outer_index: u32,
     pub inner_index: Option<u32>,
 }
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TraceReport {
+    pub incomplete: bool,
+    pub unverified_trade_calls: u64,
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Transaction {
     pub signature: String,
     pub slot: u64,
     pub failed: bool,
+    #[serde(default)]
+    pub trace: TraceReport,
     /// Execution order, including outer instructions and inner instructions with stack heights.
     pub instructions: Vec<Instruction>,
 }
@@ -30,6 +37,7 @@ pub struct Decoded {
     pub excluded_quotes: u64,
     pub failures: u64,
     pub trade_instructions: u64,
+    pub trace: TraceReport,
 }
 
 fn key(ix: &Instruction, at: usize) -> Result<&str> {
@@ -250,14 +258,50 @@ fn extended_event(ix: &Instruction, parent: &Instruction, call: Call) -> Result<
         }
     }
 }
+fn classify_call(ix: &Instruction) -> Option<Call> {
+    let specs = if ix.program == PUMP {
+        PUMP_SPECS
+    } else if ix.program == AMM {
+        PUMP_AMM_SPECS
+    } else {
+        &[]
+    };
+    if (ix.program == PUMP && ix.data.starts_with(&MULTI_HOP_CURVE_SWAP_DISC))
+        || (ix.program == AMM && ix.data.starts_with(&MULTI_HOP_SWAP_DISC))
+    {
+        Some(Call::Route)
+    } else if ix.program == AMM && ix.data.starts_with(&BOOST_BUY_AND_BURN_DISC) {
+        Some(Call::Boost)
+    } else {
+        specs
+            .iter()
+            .find(|s| ix.data.starts_with(&s.disc))
+            .copied()
+            .map(Call::Single)
+    }
+}
+fn could_affect_sol(ix: &Instruction, call: Call) -> bool {
+    match call {
+        Call::Single(spec) => spec
+            .quote
+            .is_none_or(|i| ix.accounts.get(i).is_none_or(|q| q == WSOL)),
+        Call::Boost => ix.accounts.get(4).is_none_or(|q| q == WSOL),
+        Call::Route => ix.accounts.len() < 16 || ix.accounts.iter().any(|a| a == WSOL),
+    }
+}
 pub fn decode(tx: &Transaction) -> Decoded {
-    let mut result = Decoded::default();
+    let mut result = Decoded {
+        trace: tx.trace.clone(),
+        ..Default::default()
+    };
     if tx.failed {
         return result;
     }
     let mut stack: Vec<(&Instruction, Option<Call>, usize)> = vec![];
-    let missing = |call: Option<Call>, count: usize| {
-        matches!(call, Some(Call::Single(_) | Call::Boost)) && count == 0
+    let missing = |ix: &Instruction, call: Option<Call>, count: usize| {
+        matches!(call, Some(Call::Single(_) | Call::Boost))
+            && call.is_some_and(|c| could_affect_sol(ix, c))
+            && count == 0
     };
     for ix in &tx.instructions {
         if !ix.succeeded {
@@ -266,31 +310,12 @@ pub fn decode(tx: &Transaction) -> Decoded {
         while stack.last().is_some_and(|(p, _, _)| {
             p.outer_index != ix.outer_index || p.stack_height >= ix.stack_height
         }) {
-            let (_, call, count) = stack.pop().unwrap();
-            if missing(call, count) {
+            let (parent, call, count) = stack.pop().unwrap();
+            if missing(parent, call, count) {
                 result.failures += 1;
             }
         }
-        let specs = if ix.program == PUMP {
-            PUMP_SPECS
-        } else if ix.program == AMM {
-            PUMP_AMM_SPECS
-        } else {
-            &[]
-        };
-        let call = if (ix.program == PUMP && ix.data.starts_with(&MULTI_HOP_CURVE_SWAP_DISC))
-            || (ix.program == AMM && ix.data.starts_with(&MULTI_HOP_SWAP_DISC))
-        {
-            Some(Call::Route)
-        } else if ix.program == AMM && ix.data.starts_with(&BOOST_BUY_AND_BURN_DISC) {
-            Some(Call::Boost)
-        } else {
-            specs
-                .iter()
-                .find(|s| ix.data.starts_with(&s.disc))
-                .copied()
-                .map(Call::Single)
-        };
+        let call = classify_call(ix);
         if call.is_some() {
             result.trade_instructions += 1;
         }
@@ -355,66 +380,128 @@ pub fn decode(tx: &Transaction) -> Decoded {
         }
         stack.push((ix, call, 0));
     }
-    for (_, call, count) in stack {
-        if missing(call, count) {
+    for (parent, call, count) in stack {
+        if missing(parent, call, count) {
             result.failures += 1;
         }
     }
     result
 }
 
-/// Logs are used only to verify invocation completion, never as a source of amounts.
-/// A caller can catch a failed CPI while the overall transaction still succeeds.
-pub fn apply_log_outcomes(instructions: &mut [Instruction], logs: &[String]) -> Result<()> {
-    let mut stack: Vec<(String, usize)> = vec![];
+/// Preserve verified branches when diagnostics are truncated. Transaction success proves
+/// outer calls succeeded; inner calls also need their own and every ancestor's outcome.
+/// Call only after transaction metadata confirms success.
+pub fn apply_log_outcomes(
+    instructions: &mut [Instruction],
+    logs: &[String],
+) -> Result<TraceReport> {
+    let mut outcomes = vec![None; instructions.len()];
+    for (i, ix) in instructions.iter().enumerate() {
+        if ix.stack_height == 1 {
+            outcomes[i] = Some(true);
+        }
+    }
+    let mut stack: Vec<(&str, usize)> = vec![];
     let mut cursor = 0;
+    let mut report = TraceReport::default();
     for line in logs {
+        if line == "Log truncated" {
+            report.incomplete = true;
+            break;
+        }
         let Some(rest) = line.strip_prefix("Program ") else {
             continue;
         };
-        if let Some((program, depth)) = rest.split_once(" invoke [") {
-            let height: u32 = depth
-                .strip_suffix(']')
-                .context("invalid invocation log")?
-                .parse()?;
-            ensure!(
-                height as usize == stack.len() + 1,
-                "incomplete invocation trace"
-            );
-            let index = (cursor..instructions.len())
-                .find(|i| {
-                    instructions[*i].program == program && instructions[*i].stack_height == height
-                })
-                .context("invocation not found in instruction trace")?;
-            ensure!(
-                !instructions[cursor..index]
-                    .iter()
-                    .any(|i| i.program == PUMP || i.program == AMM),
-                "missing program invocation log"
-            );
-            cursor = index + 1;
-            stack.push((program.into(), index));
-        } else if rest.ends_with(" success") || rest.contains(" failed: ") {
-            let program = rest.split_whitespace().next().context("missing program")?;
-            let (expected, start) = stack.pop().context("unmatched program completion")?;
-            ensure!(expected == program, "mismatched program completion");
-            if rest.ends_with(" success") {
-                instructions[start].succeeded = true;
-            } else {
-                for ix in &mut instructions[start..cursor] {
-                    ix.succeeded = false;
-                }
+        let Some((program, action)) = rest.split_once(' ') else {
+            continue;
+        };
+        if matches!(program, "log:" | "data:" | "return:") {
+            continue;
+        }
+        if let Some(depth) = action.strip_prefix("invoke [") {
+            let height = depth.strip_suffix(']').and_then(|d| d.parse::<u32>().ok());
+            let Some(height) = height else {
+                report.incomplete = true;
+                break;
+            };
+            if height as usize != stack.len() + 1 {
+                report.incomplete = true;
+                break;
             }
+            let index = (cursor..instructions.len()).find(|i| {
+                instructions[*i].program == program && instructions[*i].stack_height == height
+            });
+            let Some(index) = index else {
+                report.incomplete = true;
+                break;
+            };
+            if instructions[cursor..index]
+                .iter()
+                .any(|i| i.program == PUMP || i.program == AMM)
+            {
+                report.incomplete = true;
+                break;
+            }
+            cursor = index + 1;
+            stack.push((program, index));
+        } else if action == "success" || action.starts_with("failed: ") {
+            let Some((expected, start)) = stack.pop() else {
+                report.incomplete = true;
+                break;
+            };
+            if expected != program {
+                report.incomplete = true;
+                break;
+            }
+            outcomes[start] = Some(action == "success");
         }
     }
-    ensure!(stack.is_empty(), "truncated invocation trace");
-    ensure!(
-        !instructions[cursor..]
-            .iter()
-            .any(|i| i.program == PUMP || i.program == AMM),
-        "missing program completion"
-    );
-    Ok(())
+    report.incomplete |= !stack.is_empty();
+    let mut ancestors: Vec<usize> = vec![];
+    let mut unverified = std::collections::HashSet::new();
+    for i in 0..instructions.len() {
+        let height = instructions[i].stack_height;
+        while ancestors
+            .last()
+            .is_some_and(|p| instructions[*p].stack_height >= height)
+        {
+            ancestors.pop();
+        }
+        ensure!(
+            height > 0 && ancestors.len() + 1 == height as usize,
+            "invalid instruction ancestry"
+        );
+        ensure!(
+            ancestors
+                .last()
+                .is_none_or(|p| instructions[*p].outer_index == instructions[i].outer_index),
+            "inner instruction crosses outer call"
+        );
+        let failed =
+            outcomes[i] == Some(false) || ancestors.iter().any(|p| outcomes[*p] == Some(false));
+        let verified =
+            outcomes[i] == Some(true) && ancestors.iter().all(|p| outcomes[*p] == Some(true));
+        instructions[i].succeeded = verified;
+        if !failed && !verified {
+            report.incomplete = true;
+            if classify_call(&instructions[i])
+                .is_some_and(|c| could_affect_sol(&instructions[i], c))
+            {
+                unverified.insert(i);
+            }
+            if (instructions[i].program == PUMP || instructions[i].program == AMM)
+                && instructions[i].data.starts_with(&EVENT_TAG)
+                && let Some(parent) = ancestors.last()
+                && classify_call(&instructions[*parent])
+                    .is_some_and(|c| could_affect_sol(&instructions[*parent], c))
+            {
+                unverified.insert(*parent);
+            }
+        }
+        ancestors.push(i);
+    }
+    report.unverified_trade_calls = unverified.len() as u64;
+    Ok(report)
 }
 
 pub fn normalize(
@@ -431,6 +518,7 @@ pub fn normalize(
             signature: bs58::encode(&info.signature).into_string(),
             slot: update.slot,
             failed: true,
+            trace: TraceReport::default(),
             instructions: vec![],
         });
     }
@@ -496,11 +584,12 @@ pub fn normalize(
             }
         }
     }
-    apply_log_outcomes(&mut instructions, &meta.log_messages)?;
+    let trace = apply_log_outcomes(&mut instructions, &meta.log_messages)?;
     Ok(Transaction {
         signature: bs58::encode(&info.signature).into_string(),
         slot: update.slot,
         failed: false,
+        trace,
         instructions,
     })
 }
