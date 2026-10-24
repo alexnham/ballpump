@@ -7,12 +7,13 @@
 # Rust build output
 target/
 
+
 # Frontend dependencies and generated output
-node_modules/
-dist/
-.vite/
-*.tsbuildinfo
-coverage/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/*.tsbuildinfo
+/frontend/coverage/
 
 # Logs and local OS files
 *.log
