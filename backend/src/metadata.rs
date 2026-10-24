@@ -68,19 +68,26 @@ pub fn enrich(snapshot: &mut Snapshot, catalog: &Catalog) {
         }
     }
 }
+fn metadata_endpoint(explicit: Option<String>, provider: &str, key: &str) -> Option<String> {
+    explicit.filter(|s| !s.trim().is_empty()).or_else(|| {
+        (provider == "laserstream" && !key.is_empty())
+            .then(|| format!("https://mainnet.helius-rpc.com/?api-key={key}"))
+    })
+}
 pub fn start() -> (watch::Sender<Vec<String>>, watch::Receiver<Catalog>) {
     let (requests, mut wanted) = watch::channel(Vec::<String>::new());
     let (updates, catalog) = watch::channel(Catalog::new());
     tokio::spawn(async move {
-        let endpoint = std::env::var("HELIUS_RPC_URL")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                format!(
-                    "https://mainnet.helius-rpc.com/?api-key={}",
-                    std::env::var("LASERSTREAM_API_KEY").unwrap_or_default()
-                )
-            });
+        let Some(endpoint) = metadata_endpoint(
+            std::env::var("HELIUS_RPC_URL").ok(),
+            &std::env::var("STREAM_PROVIDER").unwrap_or_else(|_| "laserstream".into()),
+            &std::env::var("LASERSTREAM_API_KEY").unwrap_or_default(),
+        ) else {
+            tracing::info!(
+                "metadata disabled; configure a separate HELIUS_RPC_URL for third-party gRPC providers"
+            );
+            return;
+        };
         let Ok(client) = reqwest::Client::builder()
             .timeout(Duration::from_secs(12))
             .build()
@@ -150,6 +157,21 @@ pub fn start() -> (watch::Sender<Vec<String>>, watch::Receiver<Catalog>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn third_party_stream_tokens_are_never_used_for_helius_metadata() {
+        assert!(metadata_endpoint(None, "yellowstone", "third-party-token").is_none());
+        assert!(metadata_endpoint(Some("".into()), "yellowstone", "third-party-token").is_none());
+        assert_eq!(
+            metadata_endpoint(
+                Some("https://metadata.example.com".into()),
+                "yellowstone",
+                "third-party-token"
+            )
+            .as_deref(),
+            Some("https://metadata.example.com")
+        );
+        assert!(metadata_endpoint(None, "laserstream", "helius-test-key").is_some());
+    }
     #[test]
     fn enrichment_keeps_accounting_unchanged_in_both_rankings() {
         let mut snapshot = crate::aggregate::Window::default().snapshot("live".into(), false);

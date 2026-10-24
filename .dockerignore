@@ -15,3 +15,8 @@ frontend/**
 !frontend/vite.config.ts
 !frontend/src/
 !frontend/src/**
+
+!backend/tests/
+!backend/tests/**
+!fixtures/
+!fixtures/**

@@ -3,6 +3,7 @@ const { Bodies, Body } = Matter;
 export function ball(x: number, y: number, r: number, angle: number) {
   const body = Bodies.circle(x, y, r, {
     restitution: 1,
+    inertia: Infinity,
     friction: 0,
     frictionStatic: 0,
     frictionAir: 0,
@@ -39,5 +40,14 @@ export function bounceAtEdges(
     Body.setPosition(body, {
       x: Math.max(r, Math.min(width - r, x)),
       y: Math.max(r, Math.min(height - r, y)),
+    });
+}
+
+// A gentle drift replenishes motion lost to Matter's resting-contact solver.
+export function keepMoving(body: Matter.Body, angle: number) {
+  if (body.speed < 0.3)
+    Body.setVelocity(body, {
+      x: Math.cos(angle) * 1.8,
+      y: Math.sin(angle) * 1.8,
     });
 }

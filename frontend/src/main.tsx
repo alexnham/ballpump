@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Arena } from "./Arena";
 import { useFeed } from "./useFeed";
@@ -9,18 +9,10 @@ function App() {
     new URLSearchParams(location.search).get("demo") === "1",
   );
   const [metric, setMetric] = useState<Metric>("net_flow");
-  const [paused, setPaused] = useState(
-    () => matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  useEffect(() => {
-    const preference = matchMedia("(prefers-reduced-motion: reduce)");
-    const change = () => setPaused(preference.matches);
-    preference.addEventListener("change", change);
-    return () => preference.removeEventListener("change", change);
-  }, []);
+  const [paused, setPaused] = useState(false);
   const [list, setList] = useState(false);
   const { snapshot, connection } = useFeed(demo);
-  const tokens = snapshot?.[metric].slice(0, 50) || [];
+  const tokens = snapshot?.[metric].slice(0, 100) || [];
   const synthetic = demo || snapshot?.status === "demo";
   const status = synthetic
     ? "Demo"
@@ -86,7 +78,9 @@ function App() {
           <button
             className="pause"
             aria-pressed={paused}
-            onClick={() => setPaused(!paused)}
+            onClick={() => {
+              setPaused(!paused);
+            }}
             aria-label={paused ? "Resume animation" : "Pause animation"}
           >
             {paused ? "▶ Resume" : "Ⅱ Pause"}

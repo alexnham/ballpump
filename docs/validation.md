@@ -2,7 +2,7 @@
 
 ## Passed
 
-- `cargo test --manifest-path backend/Cargo.toml`: 19 tests (3 rolling-window unit tests, 2 metadata tests, and 14 decoder/replay integration tests).
+- `cargo test --manifest-path backend/Cargo.toml`: 22 tests (3 rolling-window, 3 metadata, 2 provider-policy, and 14 decoder/replay integration tests).
 - Exact 600-second cutoff, out-of-order insertion, duplicate event identity, simultaneous buys/sells, negative/zero net flow, future timestamps, and totals exceeding `u64`.
 - Seven recorded SOL trade examples across both venues and both directions; four recorded non-SOL exclusions; a recorded program mention with no trade.
 - Curve balance reconciliation and four independent WSOL vault reconciliations.
@@ -10,7 +10,7 @@
 - Paired LaserStream/RPC regression for truncated trailing logs, proven outer success, unresolved inner-call exclusion, spoofed log-text rejection, non-SOL uncertainty, and partial-trace ingestion metrics.
 - Schema-built multi-hop/boost/post-completion cases, explicitly distinguished from observed golden examples.
 - `cargo fmt --check` and Clippy on all targets with warnings denied.
-- `npm test --prefix frontend`: 9 tests for the wire contract, integer serialization, demo rankings, bounded radii, unsafe URL rejection, coin-name fallbacks, ball momentum transfer, and viewport wall bounces (including low speeds).
+- `npm test --prefix frontend`: 11 tests for the wire contract, integer serialization, demo rankings, bounded radii, unsafe URL rejection, coin-name fallbacks, ball momentum transfer, and viewport wall bounces (including low speeds).
 - Frontend TypeScript strict checking and Vite production build: approximately 404 kB JS / 124 kB gzip.
 - `node scripts/smoke.mjs`: live local HTTP and WebSocket endpoints, current full snapshot on reconnect, demo integer contract, and service restart.
 - Desktop Chrome visually displayed the arena, correct demo label, readable ball labels, and switched to gross buy volume.
@@ -61,3 +61,16 @@ The direct load example also expires the entire window and asserts that no token
 - Verified startup from the finalized head with `REPLAY_ON_START=false`: live ingestion lag about one second, fresh visible trades, and incomplete/degraded status retained.
 
 - Proportional sizing: area ratios are exact at 2×/4× flow, including sub-SOL values, tiny flows, and desktop/mobile dimensions. Removed the minimum-radius boost. Nine frontend tests and the production build passed; the live view was visually checked.
+
+- Dense 100-coin view: targets 72% viewport coverage with a shared proportional area scale; tested coverage and ratios for desktop/mobile dimensions. Ten frontend tests and the production build passed. Visually verified 100 live balls with coin artwork and collision animation.
+
+- Motion fix: reduced the shared area budget to 50% and maximum diameter to 80% of the shorter viewport side. Added a 100-body, 600-step regression requiring more than 80 balls to travel over three pixels during the final two seconds. Eleven frontend tests and the production build pass. Verified Resume survives browser refresh; explicit preference is stored locally.
+
+## PublicNode trial
+
+- TLS/x-token authentication succeeded against the user-supplied Yellowstone endpoint. No keys are included in these notes or fixtures.
+- A one-minute finalized subscription with Pump.fun/PumpSwap account filters received 26,042 transactions and 279 block-metadata updates, with transaction logs present. Observed block-time lag was 510–2,695 ms. This is a short sample, not a capacity or uptime guarantee.
+- PublicNode explicitly rejected finalized replay (`from_slot` is available only with processed commitment). The adapter keeps finalized commitment, disables unsupported replay and silent SDK reconnects, and surfaces gaps through the existing degraded-window policy.
+- Rust release tests: 22 passed, including provider request policy and credential separation for metadata. Clippy with warnings denied and rustfmt passed. Docker now retains Cargo caches for subsequent builds.
+
+- Native Rust end-to-end trial: 46 WebSocket snapshots over 45 seconds; 14,263 additional received transactions, 6,502 additional decoded swaps, 100 ranked tokens with names, 677 ms ending chain lag, zero reconnects and zero local drops. Checked positive integer net-lamport strings, finalized commitment, and a 600-second window. Helius LaserStream is no longer the runtime endpoint; separate Helius HTTP metadata remains configured.

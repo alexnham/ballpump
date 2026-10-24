@@ -30,7 +30,7 @@ describe("feed contract and sizing", () => {
     expect(snapshotSchema.safeParse(d).success).toBe(false);
   });
   it("bounds outliers and adapts to mobile", () => {
-    expect(radius(1e20, 1e20, 1200, 600, 50)).toBeLessThanOrEqual(100);
+    expect(radius(1e20, 1e20, 1200, 600, 1e20)).toBeLessThanOrEqual(600 * 0.4);
     expect(radius(1, 100, 350, 470, 50)).toBeGreaterThan(0);
     expect(radius(25, 100, 1200, 600, 50)).toBeLessThan(
       radius(100, 100, 1200, 600, 50),
@@ -70,4 +70,19 @@ it("keeps ball areas proportional, including tiny and sub-SOL flows", () => {
   expect(radius(0, 100, 1200, 720, 50)).toBe(0);
   expect(radius(-1, 100, 1200, 720, 50)).toBe(0);
   expect(radius(0, 0, 1200, 720, 50)).toBe(0);
+});
+
+it("packs 100 proportionally sized coins with room for collision motion", () => {
+  const values = Array.from({ length: 100 }, (_, i) => 100 - i);
+  const total = values.reduce((a, b) => a + b, 0);
+  for (const [width, height] of [
+    [1280, 720],
+    [319, 941],
+  ]) {
+    const radii = values.map((v) => radius(v, 100, width, height, total));
+    const area = radii.reduce((sum, r) => sum + Math.PI * r * r, 0);
+    expect(area / (width * height)).toBeCloseTo(0.5, 10);
+    expect(radii[0] ** 2 / radii[99] ** 2).toBeCloseTo(100, 10);
+    expect(Math.max(...radii)).toBeLessThan(Math.min(width, height) / 2);
+  }
 });

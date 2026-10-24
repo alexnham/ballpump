@@ -8,7 +8,7 @@ import {
   type Token,
   type Metric,
 } from "./data";
-import { ball, boundaries, bounceAtEdges } from "./physics";
+import { ball, boundaries, bounceAtEdges, keepMoving } from "./physics";
 const { Engine, Body, Composite, Constraint } = Matter;
 const colors = [
   "#83b9ff",
@@ -103,6 +103,10 @@ export function Arena({
         0,
         ...state.tokens.map((t) => score(t, state.metric)),
       );
+      const total = state.tokens.reduce(
+        (sum, t) => sum + Math.max(0, score(t, state.metric)),
+        0,
+      );
       const active = new Set(state.tokens.map((t) => t.mint));
       for (const [id, orb] of orbs) {
         if (!active.has(id)) {
@@ -121,7 +125,7 @@ export function Arena({
           max,
           width,
           height,
-          state.tokens.length,
+          total,
         );
         const existing = orbs.get(token.mint);
         if (existing) {
@@ -168,7 +172,11 @@ export function Arena({
       const dt = Math.min(32, now - (last || now));
       last = now;
       const moving = !latest.current.paused;
+      let motionIndex = 0;
       for (const orb of orbs.values()) {
+        if (moving && drag?.orb !== orb)
+          keepMoving(orb.body, motionIndex * 2.399963 + now / 15000);
+        motionIndex++;
         const next = orb.r + (orb.target - orb.r) * (1 - Math.exp(-dt / 380));
         if (Math.abs(next - orb.r) > 0.001) {
           Body.scale(orb.body, next / orb.r, next / orb.r);

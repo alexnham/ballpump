@@ -10,7 +10,18 @@ FROM rust:bookworm AS backend
 WORKDIR /build/backend
 COPY backend/Cargo.toml backend/Cargo.lock ./
 COPY backend/src ./src
-RUN cargo build --release --locked --bin ballpump
+# Refresh source mtimes so Cargo cannot reuse artifacts from a newer cached build.
+RUN --mount=type=cache,id=ballpump-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=ballpump-cargo-target,sharing=locked,target=/build/backend/target \
+    touch src/*.rs && cargo build --release --locked --bin ballpump && cp target/release/ballpump /build/ballpump
+
+FROM backend AS backend-tests
+COPY backend/tests ./tests
+COPY fixtures /build/fixtures
+RUN rustup component add clippy
+RUN --mount=type=cache,id=ballpump-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=ballpump-cargo-target,sharing=locked,target=/build/backend/target \
+    touch tests/*.rs && cargo test --release --locked && cargo clippy --release --locked --all-targets -- -D warnings
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -21,7 +32,7 @@ RUN apt-get update \
     && mkdir -p /app/data \
     && chown ballpump:ballpump /app/data
 WORKDIR /app
-COPY --from=backend /build/backend/target/release/ballpump /usr/local/bin/ballpump
+COPY --from=backend /build/ballpump /usr/local/bin/ballpump
 COPY --from=frontend /build/frontend/dist ./frontend/dist
 ENV SOURCE=demo \
     BIND_ADDR=0.0.0.0:3000 \

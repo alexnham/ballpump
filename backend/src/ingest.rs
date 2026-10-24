@@ -60,11 +60,42 @@ pub async fn decode_loop(mut rx: mpsc::Receiver<Raw>, tx: mpsc::Sender<Batch>, m
         }
     }
 }
+fn stream_config(endpoint: String, key: String, replay_supported: bool) -> LaserstreamConfig {
+    // Without replay, surface every disconnect to the outer coverage/warm-up loop.
+    LaserstreamConfig::new(endpoint, key)
+        .with_replay(replay_supported)
+        .with_max_reconnect_attempts(if replay_supported { 3 } else { 0 })
+}
+fn subscription(from_slot: Option<u64>) -> SubscribeRequest {
+    SubscribeRequest {
+        transactions: [(
+            "pump-ecosystem".into(),
+            SubscribeRequestFilterTransactions {
+                account_include: vec![PUMP.into(), AMM.into()],
+                vote: Some(false),
+                failed: Some(false),
+                ..Default::default()
+            },
+        )]
+        .into(),
+        blocks_meta: [("clock".into(), Default::default())].into(),
+        commitment: Some(CommitmentLevel::Finalized as i32),
+        from_slot,
+        ..Default::default()
+    }
+}
 pub async fn live(tx: mpsc::Sender<Raw>, m: Arc<Metrics>, checkpoint: String) -> Result<()> {
     let endpoint = std::env::var("LASERSTREAM_ENDPOINT")
         .context("LASERSTREAM_ENDPOINT is required in live mode")?;
     let key = std::env::var("LASERSTREAM_API_KEY")
         .context("LASERSTREAM_API_KEY is required in live mode")?;
+    let provider = std::env::var("STREAM_PROVIDER").unwrap_or_else(|_| "laserstream".into());
+    anyhow::ensure!(
+        provider == "laserstream" || provider == "yellowstone",
+        "STREAM_PROVIDER must be laserstream or yellowstone"
+    );
+    let replay_supported = provider == "laserstream";
+    tracing::info!(%provider, replay_supported, "gRPC provider selected");
     let replay_on_start: bool = std::env::var("REPLAY_ON_START")
         .unwrap_or_else(|_| "true".into())
         .parse()
@@ -81,47 +112,37 @@ pub async fn live(tx: mpsc::Sender<Raw>, m: Arc<Metrics>, checkpoint: String) ->
         );
     }
     loop {
-        let config =
-            LaserstreamConfig::new(endpoint.clone(), key.clone()).with_max_reconnect_attempts(3);
+        let config = stream_config(endpoint.clone(), key.clone(), replay_supported);
         // SDK handles transient reconnects and replay. Rebuild after terminal failures.
         let attempt = async {
-            let client = LaserstreamClient::connect(config.clone()).await?;
-            let head = client
-                .get_slot(Some(CommitmentLevel::Finalized))
-                .await?
-                .slot;
-            let first = client.subscribe_replay_info().await?.first_available;
-            let requested = cursor.map(|s| s.saturating_sub(2)).unwrap_or_else(|| {
-                if replay_on_start {
-                    head.saturating_sub(6000)
-                } else {
-                    head
+            let from_slot = if replay_supported {
+                let client = LaserstreamClient::connect(config.clone()).await?;
+                let head = client
+                    .get_slot(Some(CommitmentLevel::Finalized))
+                    .await?
+                    .slot;
+                let first = client.subscribe_replay_info().await?.first_available;
+                let requested = cursor.map(|s| s.saturating_sub(2)).unwrap_or_else(|| {
+                    if replay_on_start {
+                        head.saturating_sub(6000)
+                    } else {
+                        head
+                    }
+                });
+                let available = first.map(|first| requested.max(first));
+                if available != Some(requested) {
+                    tracing::warn!(
+                        requested,
+                        ?first,
+                        "replay unavailable or truncated; window must warm up"
+                    );
                 }
-            });
-            let from_slot = first.map(|first| requested.max(first));
-            if from_slot != Some(requested) {
-                tracing::warn!(
-                    requested,
-                    ?first,
-                    "replay unavailable or truncated; window must warm up"
-                );
-            }
-            let request = SubscribeRequest {
-                transactions: [(
-                    "pump-ecosystem".into(),
-                    SubscribeRequestFilterTransactions {
-                        account_include: vec![PUMP.into(), AMM.into()],
-                        vote: Some(false),
-                        failed: Some(false),
-                        ..Default::default()
-                    },
-                )]
-                .into(),
-                blocks_meta: [("clock".into(), Default::default())].into(),
-                commitment: Some(CommitmentLevel::Finalized as i32),
-                from_slot,
-                ..Default::default()
+                available
+            } else {
+                // PublicNode rejects from_slot with finalized; gaps require a fresh window.
+                None
             };
+            let request = subscription(from_slot);
             let (stream, _handle) = subscribe(config, request);
             tokio::pin!(stream);
             loop {
@@ -163,7 +184,7 @@ pub async fn live(tx: mpsc::Sender<Raw>, m: Arc<Metrics>, checkpoint: String) ->
         // Avoid logging provider error bodies, which may contain credentials or endpoint URLs.
         tracing::warn!(
             failed = attempt.is_err(),
-            "LaserStream session ended; retrying with overlap"
+            "gRPC session ended; retrying with incomplete coverage"
         );
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
@@ -212,5 +233,29 @@ pub async fn demo(tx: mpsc::Sender<Batch>, m: Arc<Metrics>) {
         {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn yellowstone_live_finalized_disables_replay_and_silent_retries() {
+        let config = stream_config("https://example.com".into(), "test".into(), false);
+        assert!(!config.replay);
+        assert_eq!(config.max_reconnect_attempts, Some(0));
+        let request = subscription(None);
+        assert_eq!(request.from_slot, None);
+        assert_eq!(request.commitment, Some(CommitmentLevel::Finalized as i32));
+        let filter = &request.transactions["pump-ecosystem"];
+        assert_eq!(filter.account_include, vec![PUMP, AMM]);
+        assert_eq!(filter.failed, Some(false));
+    }
+    #[test]
+    fn laserstream_keeps_replay_and_program_filters() {
+        let config = stream_config("https://example.com".into(), "test".into(), true);
+        assert!(config.replay);
+        assert_eq!(config.max_reconnect_attempts, Some(3));
+        assert_eq!(subscription(Some(123)).from_slot, Some(123));
     }
 }

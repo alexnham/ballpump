@@ -5,6 +5,7 @@ services:
       - "127.0.0.1:${PORT:-3000}:3000"
     environment:
       REPLAY_ON_START: ${REPLAY_ON_START:-true}
+      STREAM_PROVIDER: ${STREAM_PROVIDER:-laserstream}
       SOURCE: ${SOURCE:-demo}
       LASERSTREAM_ENDPOINT: ${LASERSTREAM_ENDPOINT:-}
       LASERSTREAM_API_KEY: ${LASERSTREAM_API_KEY:-}

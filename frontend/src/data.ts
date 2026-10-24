@@ -41,19 +41,16 @@ export function radius(
   max: number,
   width: number,
   height: number,
-  count: number,
+  total: number,
 ) {
-  const ceiling = Math.max(
-    16,
-    Math.min(
-      100,
-      Math.sqrt((width * height) / (Math.max(count, 1) * Math.PI)) * 0.86,
-    ),
-  );
-  if (max <= 0 || value <= 0) return 0;
-  // One shared scale: area is proportional to SOL, without a minimum-size boost.
-  return ceiling * Math.sqrt(Math.min(value / max, 1));
+  if (max <= 0 || value <= 0 || width <= 0 || height <= 0) return 0;
+  // Fill 50% of the viewport with circles, using one scale for every coin.
+  const areaScale = (width * height * 0.5) / (Math.PI * Math.max(total, max));
+  const largestRadius = Math.min(width, height) * 0.4;
+  const scale = Math.min(areaScale, (largestRadius * largestRadius) / max);
+  return Math.sqrt(Math.min(value, max) * scale);
 }
+
 const names = [
   "MOCHI",
   "BUBBLE",
